@@ -4,6 +4,7 @@ import csv
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from matplotlib import colormaps
 from matplotlib.ticker import MaxNLocator
 
 
@@ -35,10 +36,11 @@ plt.rcParams.update({
     "grid.alpha": 0.25,
 })
 
-agg = read_csv(ROOT / "speed_all.csv")
+agg = [r for r in read_csv(ROOT / "speed_all.csv") if r["status"] == "ok"]
 models = sorted({r["model"] for r in agg}, key=lambda x: ("s" in x, x))
 sizes = sorted({int(r["imgsz"]) for r in agg})
-colors = {m: c for m, c in zip(models, ["#2563eb", "#dc2626", "#059669", "#7c3aed"])}
+colors = {m: colormaps["tab10"](i % 10) for i, m in enumerate(models)}
+legend_cols = min(4, max(2, len(models)))
 
 
 def save(fig, name):
@@ -48,7 +50,7 @@ def save(fig, name):
 
 
 # 1. Main speed/latency comparison.
-fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+fig, axes = plt.subplots(1, 2, figsize=(13, 4.8))
 for m in models:
     rows = sorted([r for r in agg if r["model"] == m], key=lambda r: int(r["imgsz"]))
     x = [int(r["imgsz"]) for r in rows]
@@ -57,12 +59,12 @@ for m in models:
 axes[0].set(title="Speed by input size", xlabel="Input size (px)", ylabel="Mean FPS")
 axes[1].set(title="Tail latency by input size", xlabel="Input size (px)", ylabel="P95 latency (ms)")
 axes[0].set_xticks(sizes); axes[1].set_xticks(sizes)
-axes[0].legend(frameon=False, ncol=2)
+axes[0].legend(frameon=False, ncol=legend_cols)
 save(fig, "01_speed_and_latency.png")
 
 
 # 2. Pareto-style resource view at each resolution.
-fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+fig, axes = plt.subplots(1, 2, figsize=(13, 4.8))
 for m in models:
     rows = [r for r in agg if r["model"] == m]
     axes[0].scatter([f(r, "weights_mb") for r in rows], [f(r, "fps_mean") for r in rows],
@@ -73,13 +75,13 @@ for m in models:
 axes[0].set(title="Model size vs speed", xlabel="Weights (MB)", ylabel="Mean FPS")
 axes[1].set(title="Peak RSS by input size", xlabel="Input size (px)", ylabel="Peak RSS (MB)")
 axes[1].set_xticks(sizes)
-axes[0].legend(frameon=False, ncol=2)
+axes[0].legend(frameon=False, ncol=legend_cols)
 save(fig, "02_size_memory_tradeoffs.png")
 
 
 # 3. Latency breakdown, normalized to the measured end-to-end path.
-fig, ax = plt.subplots(figsize=(10, 5))
 ordered = sorted(agg, key=lambda r: (int(r["imgsz"]), models.index(r["model"])))
+fig, ax = plt.subplots(figsize=(max(12, len(ordered) * 0.42), 5.5))
 labels = [f"{model_label(r['model'])}\n{r['imgsz']}" for r in ordered]
 bottom = [0.0] * len(ordered)
 for key, label, color in [("pre_ms", "Pre", "#93c5fd"), ("inf_ms", "Inference", "#2563eb"), ("post_ms", "Post", "#1e3a8a")]:
@@ -89,20 +91,20 @@ for key, label, color in [("pre_ms", "Pre", "#93c5fd"), ("inf_ms", "Inference", 
 for idx, total in enumerate(bottom):
     ax.text(idx, total + max(bottom) * 0.012, f"{total:.1f}", ha="center", va="bottom", fontsize=8)
 ax.set(title="Where the end-to-end latency goes", ylabel="Milliseconds")
-ax.tick_params(axis="x", labelrotation=45)
+ax.tick_params(axis="x", labelrotation=55, labelsize=8)
 ax.legend(frameon=False, ncol=3)
 save(fig, "03_latency_breakdown.png")
 
 
 # 4. Temperature and throttling signal.
-fig, ax = plt.subplots(figsize=(10, 4.5))
+fig, ax = plt.subplots(figsize=(13, 4.8))
 for m in models:
     rows = sorted([r for r in agg if r["model"] == m], key=lambda r: int(r["imgsz"]))
     ax.plot([int(r["imgsz"]) for r in rows], [f(r, "temp_end_c") for r in rows], marker="o", lw=2,
             color=colors[m], label=model_label(m))
 ax.axhline(80, color="#b91c1c", ls="--", lw=1, label="80 °C reference")
 ax.set(title="End temperature remained below the reference line", xlabel="Input size (px)", ylabel="End temperature (°C)", xticks=sizes)
-ax.legend(frameon=False, ncol=3)
+ax.legend(frameon=False, ncol=legend_cols)
 save(fig, "04_temperature.png")
 
 
@@ -117,14 +119,14 @@ for path in trace_files:
     axes[1].plot(x, [f(r, "temp_c") for r in rows], lw=1.4, label=model_label(m), color=colors.get(m))
 axes[0].set(title="320 px window-by-window throughput", ylabel="FPS")
 axes[1].set(title="320 px temperature trace", xlabel="30-frame window", ylabel="Temperature (°C)")
-axes[0].legend(frameon=False, ncol=3)
+axes[0].legend(frameon=False, ncol=legend_cols)
 axes[0].xaxis.set_major_locator(MaxNLocator(integer=True))
 save(fig, "05_320px_stability.png")
 
 
 # 6. One compact ranking table rendered as a figure for easy sharing.
 rows320 = sorted([r for r in agg if int(r["imgsz"]) == 320], key=lambda r: f(r, "fps_mean"), reverse=True)
-fig, ax = plt.subplots(figsize=(8, 2.7))
+fig, ax = plt.subplots(figsize=(max(8, len(rows320) * 1.35), 2.7))
 ax.axis("off")
 columns = ["Model", "FPS", "P50 (ms)", "P95 (ms)", "Weights (MB)", "End temp (°C)"]
 data = [[model_label(r["model"]), f'{f(r, "fps_mean"):.2f}', f'{f(r, "lat_p50_ms"):.1f}',
