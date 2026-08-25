@@ -1,10 +1,8 @@
-"""Baseline bake-off: finetune YOLO11n and YOLO26n on identical recipe
-and data (finetuning_high_level.md step 3, project_plan.md §3).
+"""Phase 2 accuracy bake-off on identical data and training recipe.
 
-The model is the ONLY variable. Both runs use Ultralytics default
-hyperparameters and augmentation on purpose -- this is the §3 baseline.
-The §5 aerial recipe (heavy augmentation, 200 epochs, oversampling) is
-applied later to the winner only, not here.
+The model is the only variable. This follows docs/model_selection.md:
+60 epochs, early stopping disabled, fixed seed/determinism, and identical
+aerial augmentations for every candidate.
 
 Runs are sequential: a single 6 GB GPU cannot hold two trainings at
 once. Each run gets its own folder under `runs/` plus a GPU-usage CSV
@@ -12,7 +10,7 @@ written by GpuLogger (step 2) alongside the standard TensorBoard events.
 
 Usage:
     python run_bakeoff.py
-    python run_bakeoff.py --models yolo11n.pt yolo26n.pt --epochs 50
+    python run_bakeoff.py --models yolov8n.pt yolo10n.pt yolo11n.pt yolo26n.pt
     python run_bakeoff.py --epochs 3 --gpu-interval 2   # quick smoke test
 """
 
@@ -23,7 +21,7 @@ from log_gpu import GpuLogger
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATA = REPO_ROOT / "data/processed/uav/uav.yaml"
-DEFAULT_MODELS = ["yolo11n.pt", "yolo26n.pt"]
+DEFAULT_MODELS = ["yolov8n.pt", "yolov10n.pt", "yolo11n.pt", "yolo26n.pt"]
 
 
 def train_one(model_name: str, args: argparse.Namespace) -> None:
@@ -44,6 +42,10 @@ def train_one(model_name: str, args: argparse.Namespace) -> None:
             batch=args.batch,
             seed=0,
             deterministic=True,
+            patience=0,
+            copy_paste=0.3,
+            degrees=180.0,
+            flipud=0.5,
             cache=args.cache,
             project=str(args.project),
             name=run_name,
@@ -57,10 +59,9 @@ def main() -> None:
                         help=f"Model weights to bake off (default: {DEFAULT_MODELS})")
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA,
                         help="Dataset YAML (default: data/processed/uav/uav.yaml)")
-    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--epochs", type=int, default=60)
     parser.add_argument("--imgsz", type=int, default=640)
-    parser.add_argument("--batch", type=int, default=-1,
-                        help="-1 auto-sizes batch for available VRAM")
+    parser.add_argument("--batch", type=int, default=32)
     parser.add_argument("--cache", default="disk",
                         help="Ultralytics cache mode: ram / disk / False")
     parser.add_argument("--project", type=Path, default=REPO_ROOT / "runs",
@@ -73,6 +74,12 @@ def main() -> None:
         raise SystemExit(f"Dataset YAML not found: {args.data}")
     if str(args.cache).lower() in {"false", "none", "0"}:
         args.cache = False
+
+    # Ultralytics resolves relative project paths below its configured
+    # runs_dir (usually runs/detect). Resolve here so the GPU logger and
+    # Ultralytics always write to the same directory.
+    args.data = args.data.resolve()
+    args.project = args.project.resolve()
 
     print(f"Bake-off: {args.models}  |  {args.epochs} epochs  |  imgsz={args.imgsz}")
     for model_name in args.models:
