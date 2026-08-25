@@ -1,0 +1,22 @@
+description: Ultralytics YOLO26n model trained on D:\D\object_detection\data\processed\uav\uav.yaml
+author: Ultralytics
+date: '2026-08-25T09:26:32.391113+00:00'
+version: 8.4.121
+license: AGPL-3.0 License (https://ultralytics.com/license)
+docs: https://docs.ultralytics.com
+stride: 32
+task: detect
+head: Detect
+batch: 1
+imgsz:
+- 512
+- 512
+names:
+  0: person
+  1: vehicle
+  2: military_equipment
+args:
+  batch: 1
+  quantize: null
+channels: 3
+end2end: false
