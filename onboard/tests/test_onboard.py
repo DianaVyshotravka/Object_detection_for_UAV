@@ -236,6 +236,24 @@ def test_video_stream_drops_when_queue_full():
     assert not thread.is_alive()
 
 
+def test_video_stream_evicts_oldest_not_newest():
+    """A full queue must hold the FRESHEST frames, not the stalest.
+
+    Inference is slower than the camera for the whole flight, so the queue sits
+    permanently full. Dropping the incoming frame would leave the consumer
+    pulling entries a full queue-depth old, every frame, forever.
+    """
+    frame_queue = queue.Queue(maxsize=2)
+    stream = VideoStream(FakeCapture(), frame_queue, threading.Event(), Logger())
+
+    for frame_id in range(1, 6):
+        stream._enqueue_newest(a_frame(frame_id))
+
+    assert frame_queue.qsize() == 2
+    assert [frame_queue.get_nowait().frame_id for _ in range(2)] == [4, 5]
+    assert stream.frames_dropped == 3
+
+
 def test_video_stream_bails_on_dead_camera():
     """Failed reads must back off and stop, not spin a core at 100%."""
     capture = FakeCapture(ok=False)

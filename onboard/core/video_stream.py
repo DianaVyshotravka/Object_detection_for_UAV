@@ -80,6 +80,27 @@ class VideoStream:
         self.frames_dropped = 0
         self.failed = False
 
+    def _enqueue_newest(self, frame) -> None:
+        """Queue the frame, evicting the oldest rather than dropping this one.
+
+        Never blocks: blocking here would desync capture from real time and
+        geotag later frames at stale positions.
+        """
+        try:
+            self.frame_queue.put_nowait(frame)
+            return
+        except queue.Full:
+            pass
+        try:
+            self.frame_queue.get_nowait()  # discard oldest, keep the freshest
+        except queue.Empty:
+            pass 
+        try:
+            self.frame_queue.put_nowait(frame)
+        except queue.Full:
+            pass 
+        self.frames_dropped += 1
+
     def run(self) -> None:
         fails = 0
         frame_id = 0
@@ -107,12 +128,7 @@ class VideoStream:
             # moment of exposure, not the moment of delivery.
             frame = Frame(frame_id=frame_id, timestamp=time.time() - self.latency_s,
                           image=image)
-            try:
-                self.frame_queue.put_nowait(frame)
-            except queue.Full:
-                # Drop deliberately: blocking here would desync capture from
-                # real time and geotag later frames at stale positions.
-                self.frames_dropped += 1
+            self._enqueue_newest(frame)
 
             now = time.monotonic()
             if now - last_report >= self.report_every_s:
