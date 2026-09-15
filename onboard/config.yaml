@@ -1,0 +1,44 @@
+# Onboard detection service configuration.
+# Relative paths resolve against the deploy root (the parent of onboard/).
+
+camera:
+  source: "0"          # cv2 device index, a video file path, or "csi" for Picamera2
+  # auto | picamera2 | cv2. A CSI ribbon camera needs picamera2, which is an
+  # apt package, and a venv that can see it:
+  #   sudo apt install -y python3-picamera2
+  #   python3 -m venv --system-site-packages ~/uav/.venv
+  backend: auto
+  width: 1920
+  height: 1080
+  # Calibration knob, not a constant: the gap between exposure and delivery
+  # (V4L2 buffer depth + exposure time). At 20 m/s, 100 ms is a 2 m geotag
+  # error. Measure once per camera by filming a GPS-stamped clock.
+  latency_ms: 0.0
+  max_read_failures: 30
+
+mavlink:
+  enabled: true
+  url: /dev/serial0    # or udp:127.0.0.1:14550 for SITL
+  baud: 57600
+  telemetry_hz: 5
+  timesync_interval_s: 10.0
+  max_rtt_s: 0.5
+
+detector:
+  model_path: models/yolo26n_512_visdrone_crops_v1/yolo26n_512_visdrone_crops_v1_512_ncnn_model
+  imgsz: 512           # must match the export; see the model's metadata.yaml
+  conf: 0.25
+  iou: 0.7
+
+storage:
+  out_dir: flights
+  save_mode: detections   # detections | all ("all" is ~25 GB/hour at 23 FPS)
+  jpeg_quality: 85
+  save_min_interval_s: 0.0
+  min_free_mb: 512        # below this, stop saving images but keep flying
+
+log_file: flights/onboard.log
+init_timeout_s: 10.0
+max_telemetry_dt_s: 0.5
+frame_queue_size: 2
+telemetry_buffer_size: 50

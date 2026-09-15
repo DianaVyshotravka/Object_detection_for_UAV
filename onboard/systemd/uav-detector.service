@@ -1,0 +1,24 @@
+[Unit]
+Description=UAV detection onboard service
+# StartLimit* belong in [Unit] on systemd >= 229; in [Service] they are ignored.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=pi
+# Required for `-m onboard.main` to resolve, and for relative config paths.
+WorkingDirectory=/home/pi/uav
+Environment=PYTHONUNBUFFERED=1
+# The venv interpreter, not /usr/bin/python3 -- ultralytics/torch live in the
+# venv created by docs/phase3_pi_runbook.md.
+ExecStart=/home/pi/uav/.venv/bin/python -m onboard.main --config /home/pi/uav/onboard/config.yaml
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+# Shutdown takes ~2 s; this leaves margin before systemd escalates to SIGKILL
+# and truncates a JPEG mid-write.
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
