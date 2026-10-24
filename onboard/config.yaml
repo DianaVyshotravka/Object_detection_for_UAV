@@ -22,7 +22,7 @@ mavlink:
   enabled: true
   url: /dev/serial0    # or udp:127.0.0.1:14550 for SITL
   baud: 57600
-  telemetry_hz: 5
+  telemetry_hz: 20       # GLOBAL_POSITION_INT; 20 Hz = 1 m between samples at 20 m/s
   timesync_interval_s: 10.0
   max_rtt_s: 0.5
 
