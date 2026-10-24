@@ -269,6 +269,47 @@ def test_video_stream_bails_on_dead_camera():
     assert time.monotonic() - started > 0.4, "no backoff -- this is a busy-spin"
 
 
+def test_video_stream_treats_read_exception_as_failure():
+    """Picamera2 raises rather than returning ok=False; that must not kill the thread."""
+    class RaisingCapture(FakeCapture):
+        def read(self):
+            self.reads += 1
+            raise RuntimeError("libcamera: dequeue timeout")
+
+    capture = RaisingCapture()
+    stop = threading.Event()
+    stream = VideoStream(capture, queue.Queue(maxsize=2), stop, Logger(),
+                         max_read_failures=3)
+    stream.run()
+    assert stream.failed and stop.is_set() and capture.reads == 3
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_run_exits_1_when_a_worker_dies(tmp_path):
+    """A crashed thread must stop the service (-> systemd restart), not idle."""
+    import os
+    import signal
+    from onboard.main import run
+
+    class DyingCapture(FakeCapture):
+        def read(self):
+            raise SystemExit  # escapes `except Exception`, like any unforeseen crash
+
+    config = make_config(tmp_path)
+    config.mavlink.enabled = False
+    # Safety net: if the watchdog is broken, SIGTERM ends run() with 0, not a hang.
+    timer = threading.Timer(5.0, os.kill, (os.getpid(), signal.SIGTERM))
+    timer.start()
+    try:
+        code = run(config, DyingCapture(), None, Logger(), detector=FakeDetector())
+    finally:
+        timer.cancel()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, signal.default_int_handler if sig == signal.SIGINT
+                          else signal.SIG_DFL)
+    assert code == 1
+
+
 def test_video_stream_timestamps_compensate_latency():
     frame_queue = queue.Queue(maxsize=4)
     stop = threading.Event()
