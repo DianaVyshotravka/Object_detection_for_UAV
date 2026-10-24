@@ -28,7 +28,7 @@ from onboard.config import Config, StorageConfig  # noqa: E402
 from onboard.core import geotag  # noqa: E402
 from onboard.core.clock_sync import ClockSync  # noqa: E402
 from onboard.core.logger import Logger  # noqa: E402
-from onboard.core.pipeline import DetectionPipeline, nearest_telemetry  # noqa: E402
+from onboard.core.pipeline import DetectionPipeline, nearest_telemetry, new_run_dir  # noqa: E402
 from onboard.core.types import Detection, Frame, Telemetry  # noqa: E402
 from onboard.core.video_stream import VideoStream  # noqa: E402
 
@@ -314,6 +314,16 @@ def test_pipeline_creates_a_fresh_out_dir(tmp_path):
     pipeline._write(record)
     assert (fresh / "000001.jpg").exists()
     assert (fresh / "detections.jsonl").exists()
+
+
+def test_new_run_dir_never_reuses_a_run(tmp_path, monkeypatch):
+    """frame_id restarts at 1 each run, so a reused dir overwrites JPEGs."""
+    monkeypatch.setattr(time, "strftime", lambda fmt: "2026-10-24_14-03-12")
+    root = tmp_path / "flights"
+    assert new_run_dir(root).name == "2026-10-24_14-03-12"  # creates root too
+    # Same clock reading again (no RTC, Pi rebooted to a saved time):
+    assert new_run_dir(root).name == "2026-10-24_14-03-12_2"
+    assert new_run_dir(root).name == "2026-10-24_14-03-12_3"
 
 
 def test_pipeline_save_mode_all(tmp_path):
