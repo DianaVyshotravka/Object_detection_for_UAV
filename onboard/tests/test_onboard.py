@@ -323,6 +323,72 @@ def test_video_stream_timestamps_compensate_latency():
     assert time.monotonic() - frame.timestamp >= 0.25
 
 
+def test_video_stream_prefers_sensor_timestamp():
+    """A capture that knows its exposure time beats now() minus a guess."""
+    exposed = time.monotonic() - 0.180            # e.g. 2 buffers deep at 10 fps
+    capture = FakeCapture()
+    capture.last_timestamp = exposed
+    frame_queue = queue.Queue(maxsize=4)
+    stop = threading.Event()
+    stream = VideoStream(capture, frame_queue, stop, Logger(), latency_s=0.01)
+    thread = threading.Thread(target=stream.run, daemon=True)
+    thread.start()
+    frame = frame_queue.get(timeout=2.0)
+    stop.set()
+    thread.join(timeout=1.0)
+    assert frame.timestamp == pytest.approx(exposed - 0.01)
+
+
+def test_picamera2_sensor_timestamp(monkeypatch):
+    """SensorTimestamp is used when sane, dropped when on another timebase."""
+    from onboard.core import video_stream
+
+    class Request:
+        def __init__(self, ns):
+            self.ns, self.released = ns, False
+
+        def make_array(self, name):
+            return np.zeros((4, 4, 3), np.uint8)
+
+        def get_metadata(self):
+            return {} if self.ns is None else {"SensorTimestamp": self.ns}
+
+        def release(self):
+            self.released = True
+
+    class FakePicamera2:
+        next_ns = None
+
+        def create_video_configuration(self, **kw):
+            return kw
+
+        def configure(self, cfg):
+            pass
+
+        def start(self):
+            pass
+
+        def capture_request(self):
+            self.request = Request(FakePicamera2.next_ns)
+            return self.request
+
+    monkeypatch.setitem(sys.modules, "picamera2", SimpleNamespace(Picamera2=FakePicamera2))
+    capture = video_stream.Picamera2Capture(4, 4, Logger())
+
+    FakePicamera2.next_ns = time.monotonic_ns() - 50 * MS
+    ok, image = capture.read()
+    assert ok and image.shape == (4, 4, 3) and capture._cam.request.released
+    assert time.monotonic() - capture.last_timestamp == pytest.approx(0.05, abs=0.02)
+
+    FakePicamera2.next_ns = 1_700_000_000 * 10**9   # a wall-clock (realtime) stamp
+    capture.read()
+    assert capture.last_timestamp is None
+
+    FakePicamera2.next_ns = None                    # no metadata
+    capture.read()
+    assert capture.last_timestamp is None
+
+
 # --- pipeline -------------------------------------------------------------
 
 def make_pipeline(tmp_path, detections=None, clock_sync=None, **storage):

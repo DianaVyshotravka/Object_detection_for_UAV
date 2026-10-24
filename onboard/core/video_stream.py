@@ -1,7 +1,9 @@
 """VideoStream -- frame capture thread.
 
 VideoStream itself never opens a device: it takes an already-opened capture
-object exposing ``read() -> (ok, image)`` and ``release()``. That keeps cv2 and
+object exposing ``read() -> (ok, image)`` and ``release()``, plus an optional
+``last_timestamp`` (monotonic seconds of the last frame's exposure, or None
+when the device cannot say). That keeps cv2 and
 picamera2 out of this class and makes the thread testable against a fake.
 ``open_capture()`` below is the factory that does touch the hardware.
 """
@@ -12,14 +14,25 @@ import time
 
 from .types import Frame
 
+MAX_SENSOR_SKEW_S = 1.0
+
 
 class Picamera2Capture:
     """cv2-shaped adapter over Picamera2 (CSI ribbon cameras on Pi OS Bookworm,
-    which libcamera owns and cv2.VideoCapture cannot open)."""
+    which libcamera owns and cv2.VideoCapture cannot open).
 
-    def __init__(self, width: int, height: int):
+    Also reports the true exposure time: libcamera's SensorTimestamp (ns,
+    CLOCK_MONOTONIC on the Pi's CSI drivers) is stamped by the kernel at
+    frame start, so buffer depth and delivery lag drop out of the geotag
+    without calibrating camera.latency_ms.
+    """
+
+    def __init__(self, width: int, height: int, logger=None):
         from picamera2 import Picamera2  # imported here so this module loads on a dev box
 
+        self.logger = logger
+        self.last_timestamp = None
+        self._skew_logged = False
         self._cam = Picamera2()
         # picamera2's "RGB888" is BGR in memory, which is what cv2/Ultralytics expect.
         self._cam.configure(self._cam.create_video_configuration(
@@ -27,7 +40,27 @@ class Picamera2Capture:
         self._cam.start()
 
     def read(self):
-        return True, self._cam.capture_array()
+        request = self._cam.capture_request()
+        try:
+            image = request.make_array("main")
+            sensor_ns = request.get_metadata().get("SensorTimestamp")
+        finally:
+            request.release()  # unreleased requests starve the 2-buffer pool
+        self.last_timestamp = self._check(sensor_ns)
+        return True, image
+
+    def _check(self, sensor_ns):
+        if sensor_ns is None:
+            return None
+        stamp = sensor_ns / 1e9
+        skew = time.monotonic() - stamp
+        if not 0.0 <= skew <= MAX_SENSOR_SKEW_S:
+            if not self._skew_logged and self.logger is not None:
+                self.logger.log_warning("camera: SensorTimestamp %.3f s off monotonic, "
+                                        "using delivery time" % skew)
+                self._skew_logged = True
+            return None
+        return stamp
 
     def release(self):
         self._cam.stop()
@@ -47,7 +80,7 @@ def open_capture(camera_cfg, logger):
 
     if want_pi:
         try:
-            return Picamera2Capture(camera_cfg.width, camera_cfg.height)
+            return Picamera2Capture(camera_cfg.width, camera_cfg.height, logger)
         except Exception as exc:
             if camera_cfg.backend == "picamera2":
                 raise
@@ -128,9 +161,12 @@ class VideoStream:
             fails = 0
             frame_id += 1
             self.frames_read += 1
-            # Subtract the measured capture latency so the timestamp is the
-            # moment of exposure, not the moment of delivery.
-            frame = Frame(frame_id=frame_id, timestamp=time.monotonic() - self.latency_s,
+            # Sensor exposure time when the device reports one (Picamera2),
+            # else delivery time.
+            stamp = getattr(self.capture, "last_timestamp", None)
+            frame = Frame(frame_id=frame_id,
+                          timestamp=(stamp if stamp is not None else time.monotonic())
+                          - self.latency_s,
                           image=image)
             self._enqueue_newest(frame)
 

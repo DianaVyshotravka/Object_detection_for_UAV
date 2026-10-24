@@ -13,6 +13,8 @@ camera:
   # Calibration knob, not a constant: the gap between exposure and delivery
   # (V4L2 buffer depth + exposure time). At 20 m/s, 100 ms is a 2 m geotag
   # error. Measure once per camera by filming a GPS-stamped clock.
+  # picamera2 (CSI) stamps frames from the sensor itself: leave 0 unless a
+  # measurement shows a residual.
   latency_ms: 0.0
   max_read_failures: 30
 
