@@ -527,6 +527,90 @@ def test_mavlink_module_imports_without_pymavlink():
             mavlink_client.MavlinkClient("udp:127.0.0.1:14550").connect(timeout=0.1)
 
 
+class FakeLink:
+    """mavutil-shaped connection: recv_match pops queued messages."""
+
+    def __init__(self, messages=()):
+        self.messages = list(messages)
+
+    def recv_match(self, type, blocking, timeout):
+        if self.messages:
+            return self.messages.pop(0)
+        time.sleep(0.01)
+        return None
+
+    def close(self):
+        pass
+
+
+def a_position(t_boot_ms=1000):
+    return SimpleNamespace(get_type=lambda: "GLOBAL_POSITION_INT", time_boot_ms=t_boot_ms,
+                           lat=500000000, lon=300000000, alt=120000, relative_alt=50000,
+                           hdg=9000)
+
+
+def start_reader(client):
+    buffer, stop = deque(maxlen=50), threading.Event()
+    client.attach(buffer, threading.Lock(), make_clock_sync(), stop)
+    thread = threading.Thread(target=client.run, daemon=True)
+    thread.start()
+    return buffer, stop, thread
+
+
+def wait_for(condition, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return condition()
+
+
+def test_mavlink_reconnects_when_autopilot_comes_up_late(monkeypatch):
+    """Autopilot absent at startup must not mean no GPS for the whole flight."""
+    from onboard.core import mavlink_client
+    monkeypatch.setattr(mavlink_client, "RECONNECT_S", 0.01)
+
+    client = mavlink_client.MavlinkClient("/dev/serial0", logger=Logger())
+    attempts = []
+
+    def connect(timeout):
+        attempts.append(timeout)
+        if len(attempts) < 3:
+            raise RuntimeError("no MAVLink heartbeat")
+        client.conn = FakeLink([a_position()])
+
+    client.connect = connect
+    buffer, stop, thread = start_reader(client)
+    try:
+        assert wait_for(lambda: len(buffer) == 1), "never recovered telemetry"
+        assert len(attempts) == 3
+    finally:
+        stop.set()
+        thread.join(timeout=1.0)
+
+
+def test_mavlink_rerequests_streams_when_position_goes_silent(monkeypatch):
+    """An autopilot reboot forgets our stream rates; the link never errors."""
+    from onboard.core import mavlink_client
+    monkeypatch.setattr(mavlink_client, "STREAM_SILENCE_S", 0.05)
+
+    client = mavlink_client.MavlinkClient("/dev/serial0", logger=Logger())
+    client.conn = FakeLink()
+    requests = []
+    client.request_streams = requests.append
+    _, stop, thread = start_reader(client)
+    try:
+        assert wait_for(lambda: len(requests) >= 2), "silent link never re-requested"
+    finally:
+        stop.set()
+        thread.join(timeout=1.0)
+    assert requests[0] == client.telemetry_hz
+
+
+def test_timesync_send_is_a_noop_while_link_down():
+    from onboard.core.mavlink_client import MavlinkClient
+    MavlinkClient("/dev/serial0").send_timesync(0, 1)  # conn is None: must not raise
+
+
 # --- integration: the two terminal branches of Fig. 2.3 -------------------
 
 def child_main():

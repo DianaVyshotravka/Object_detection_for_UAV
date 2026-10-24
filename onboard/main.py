@@ -50,13 +50,22 @@ def init_camera(config, logger):
     return open_capture(config.camera, logger)
 
 
+def new_mavlink_client(config, logger):
+    return MavlinkClient(config.mavlink.url, config.mavlink.baud,
+                         config.mavlink.telemetry_hz, logger)
+
+
 def init_mavlink(config, logger):
     if not config.mavlink.enabled:
         logger.log_info("mavlink: disabled by config, running without telemetry")
         return None
-    client = MavlinkClient(config.mavlink.url, config.mavlink.baud,
-                           config.mavlink.telemetry_hz, logger)
-    client.connect(timeout=config.init_timeout_s)
+    client = new_mavlink_client(config, logger)
+    try:
+        client.connect(timeout=config.init_timeout_s)
+    except Exception as exc:
+        # Degraded on purpose: a dead link is no reason to abandon a mission
+        # the camera can fly. The unconnected client keeps retrying in run().
+        logger.log_error(f"mavlink: {exc} -- starting without telemetry")
     return client
 
 
@@ -89,11 +98,11 @@ def parallel_init(config, logger):
     if "camera" not in results:
         raise RuntimeError(f"camera: open timed out after {config.init_timeout_s}s")
     if "mavlink" in errors or "mavlink" not in results:
-        # Degraded mode on purpose: a dead telemetry link is no reason to
-        # abandon a mission the camera can still fly. Frames lose their GPS.
+        # Still hung at the deadline: hand run() a fresh client to retry with.
+        # The stuck one closes its own port when its heartbeat wait expires.
         reason = errors.get("mavlink", "connect timed out")
-        logger.log_error(f"mavlink: {reason} -- continuing without telemetry")
-        results["mavlink"] = None
+        logger.log_error(f"mavlink: {reason} -- starting without telemetry")
+        results["mavlink"] = new_mavlink_client(config, logger)
     return results["camera"], results["mavlink"]
 
 
