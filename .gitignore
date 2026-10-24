@@ -2,8 +2,15 @@
 data/raw/
 data/interim/
 data/processed/
+data/benchmark/
 __pycache__/
 _viz_samples/
 .claude/
 runs/
+*.md
+*.jpg
+*.png
+*.csv
+phase2/
+
 
