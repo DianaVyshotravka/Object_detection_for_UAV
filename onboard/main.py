@@ -129,36 +129,48 @@ def run(config, camera, mavlink_client, logger, detector=None) -> int:
     telemetry_buffer = deque(maxlen=config.telemetry_buffer_size)
     telemetry_lock = threading.Lock()
 
-    if detector is None:
-        from onboard.core.detector_model import DetectorModel
-        detector = DetectorModel(config.detector.model_path, config.detector.imgsz,
-                                 config.detector.conf, config.detector.iou, logger)
+    threads = []
+
+    def start(name, worker):
+        thread = threading.Thread(target=worker.run, name=name, daemon=True)
+        thread.start()
+        threads.append(thread)
 
     clock_sync = None
-    workers = []
     if mavlink_client is not None:
         clock_sync = ClockSync(mavlink_client.send_timesync, stop_event, logger,
                                config.mavlink.timesync_interval_s, config.mavlink.max_rtt_s)
         mavlink_client.attach(telemetry_buffer, telemetry_lock, clock_sync, stop_event)
-        workers += [("mavlink", mavlink_client), ("clock_sync", clock_sync)]
+        # Read before the multi-second model load below: an unread serial link
+        # backs up, and the first (stale) position would bootstrap the clock
+        # offset wrong by the backlog's age. Also gives TIMESYNC a head start.
+        start("mavlink", mavlink_client)
+        start("clock_sync", clock_sync)
 
-    video_stream = VideoStream(camera, frame_queue, stop_event, logger,
-                               config.camera.latency_ms / 1000.0,
-                               config.camera.max_read_failures)
-    pipeline = DetectionPipeline(frame_queue, telemetry_buffer, telemetry_lock,
-                                 clock_sync, detector, config, logger, stop_event)
-    workers += [("video", video_stream), ("pipeline", pipeline)]
-
-    threads = [threading.Thread(target=w.run, name=name, daemon=True) for name, w in workers]
-    for t in threads:
-        t.start()
-    logger.log_info("onboard service running (%d threads)" % len(threads))
+    crashed = video_stream = None
+    try:
+        if detector is None:
+            from onboard.core.detector_model import DetectorModel
+            detector = DetectorModel(config.detector.model_path, config.detector.imgsz,
+                                     config.detector.conf, config.detector.iou, logger)
+    except Exception as exc:
+        logger.log_error(f"detector: load failed: {exc}")
+        crashed = "detector"
+        stop_event.set()  # straight to shutdown: release camera, close link, exit 1
+    else:
+        video_stream = VideoStream(camera, frame_queue, stop_event, logger,
+                                   config.camera.latency_ms / 1000.0,
+                                   config.camera.max_read_failures)
+        pipeline = DetectionPipeline(frame_queue, telemetry_buffer, telemetry_lock,
+                                     clock_sync, detector, config, logger, stop_event)
+        start("video", video_stream)
+        start("pipeline", pipeline)
+        logger.log_info("onboard service running (%d threads)" % len(threads))
 
     # Poll rather than block forever, so the stop latency is bounded. Workers
     # only return after stop_event, so one dead before then has crashed:
     # without this check the service idles with no frames and systemd never
     # restarts it.
-    crashed = None
     while not stop_event.wait(0.2):
         crashed = next((t.name for t in threads if not t.is_alive()), None)
         if crashed and not stop_event.is_set():  # not a clean stop racing the check
@@ -181,7 +193,7 @@ def run(config, camera, mavlink_client, logger, detector=None) -> int:
     if mavlink_client is not None:
         mavlink_client.close()
 
-    return 1 if video_stream.failed or crashed else 0
+    return 1 if crashed or video_stream.failed else 0
 
 
 def main(argv=None) -> int:
