@@ -4,3 +4,15 @@ pandas>=2.0
 matplotlib>=3.7
 ultralytics>=8.3
 tensorboard
+psutil>=5.9
+gradio
+
+# onboard service 
+opencv-python-headless>=4.8   
+PyYAML>=6.0                   
+pymavlink>=2.4               
+pytest>=8.0                   # onboard/tests
+# picamera2 is NOT pip-installable -- CSI ribbon cameras need the apt package:
+#   sudo apt install -y python3-picamera2
+#   python3 -m venv --system-site-packages ~/uav/.venv   (or picamera2 is invisible to the venv)
+
