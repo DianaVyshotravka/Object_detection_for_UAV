@@ -19,7 +19,7 @@ from onboard.config import load_config
 from onboard.core.clock_sync import ClockSync
 from onboard.core.logger import Logger
 from onboard.core.mavlink_client import MavlinkClient
-from onboard.core.pipeline import DetectionPipeline
+from onboard.core.pipeline import DetectionPipeline, new_run_dir
 from onboard.core.video_stream import VideoStream, open_capture
 
 DEFAULT_CONFIG = Path(__file__).resolve().parent / "config.yaml"
@@ -177,6 +177,9 @@ def main(argv=None) -> int:
     except Exception as exc:
         logger.log_error(f"initialization failed: {exc}")
         return 1  # -> systemd Restart=on-failure
+    # After init, so a crash-looping camera does not leave empty run dirs behind.
+    config.storage.out_dir = str(new_run_dir(Path(config.storage.out_dir)))
+    logger.log_info(f"storage: writing to {config.storage.out_dir}")
     return run(config, camera, mavlink_client, logger)
 
 

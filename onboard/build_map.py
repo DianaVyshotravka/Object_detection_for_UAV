@@ -4,7 +4,7 @@ Standalone, not part of the onboard process: the operator runs it after the
 card comes out of the drone. Reads GPS back out of the saved JPEGs' EXIF and
 the detections out of detections.jsonl.
 
-Run: python -m onboard.build_map --flight-dir flights
+Run: python -m onboard.build_map --flight-dir flights/2026-10-24_14-03-12
 """
 
 import argparse

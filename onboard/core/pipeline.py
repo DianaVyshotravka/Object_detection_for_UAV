@@ -41,6 +41,20 @@ def nearest_telemetry(buffer: deque, lock: threading.Lock, frame_ts: float,
     # list only if the buffer ever grows past a few hundred samples.
 
 
+def new_run_dir(root: Path) -> Path:
+    """Create root/<Pi local start time>, e.g. flights/2026-10-24_14-03-12.
+    
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+    path, n = root / stamp, 1
+    while path.exists():
+        n += 1
+        path = root / f"{stamp}_{n}"
+    path.mkdir()
+    return path
+
+
 class DetectionPipeline:
     def __init__(self, frame_queue: Queue, telemetry_buffer: deque,
                  telemetry_lock: threading.Lock, clock_sync, detector, config,
