@@ -145,8 +145,18 @@ def run(config, camera, mavlink_client, logger, detector=None) -> int:
         t.start()
     logger.log_info("onboard service running (%d threads)" % len(threads))
 
+    # Poll rather than block forever, so the stop latency is bounded. Workers
+    # only return after stop_event, so one dead before then has crashed:
+    # without this check the service idles with no frames and systemd never
+    # restarts it.
+    crashed = None
     while not stop_event.wait(0.2):
-        pass  # poll rather than block forever, so the stop latency is bounded
+        crashed = next((t.name for t in threads if not t.is_alive()), None)
+        if crashed and not stop_event.is_set():  # not a clean stop racing the check
+            logger.log_error(f"thread {crashed} died unexpectedly, stopping")
+            stop_event.set()
+        else:
+            crashed = None
 
     logger.log_info("stopping threads, releasing resources")
     for t in threads:
@@ -162,7 +172,7 @@ def run(config, camera, mavlink_client, logger, detector=None) -> int:
     if mavlink_client is not None:
         mavlink_client.close()
 
-    return 1 if video_stream.failed else 0
+    return 1 if video_stream.failed or crashed else 0
 
 
 def main(argv=None) -> int:

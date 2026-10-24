@@ -107,7 +107,11 @@ class VideoStream:
         last_report = time.monotonic()
 
         while not self.stop_event.is_set():
-            ok, image = self.capture.read()
+            try:
+                ok, image = self.capture.read()
+            except Exception as exc: 
+                self.logger.log_error(f"camera: read raised: {exc}")
+                ok, image = False, None
             if not ok or image is None:
                 fails += 1
                 if fails >= self.max_read_failures:
