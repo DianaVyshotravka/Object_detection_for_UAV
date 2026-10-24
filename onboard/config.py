@@ -51,11 +51,19 @@ class StorageConfig:
 
 
 @dataclass
+class LiveConfig:
+    enabled: bool = False
+    host: str = "127.0.0.1"   # 0.0.0.0 to view from another machine; no auth
+    port: int = 8080
+
+
+@dataclass
 class Config:
     camera: CameraConfig = field(default_factory=CameraConfig)
     mavlink: MavlinkConfig = field(default_factory=MavlinkConfig)
     detector: DetectorConfig = field(default_factory=DetectorConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
+    live: LiveConfig = field(default_factory=LiveConfig)
     log_file: Optional[str] = None
     init_timeout_s: float = 10.0
     max_telemetry_dt_s: float = 0.5
@@ -64,7 +72,7 @@ class Config:
 
 
 _SECTIONS = {"camera": CameraConfig, "mavlink": MavlinkConfig,
-             "detector": DetectorConfig, "storage": StorageConfig}
+             "detector": DetectorConfig, "storage": StorageConfig, "live": LiveConfig}
 
 
 def _build(cls, data: dict):

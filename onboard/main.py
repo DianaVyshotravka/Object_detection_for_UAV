@@ -163,6 +163,14 @@ def run(config, camera, mavlink_client, logger, detector=None) -> int:
                                    config.camera.max_read_failures)
         pipeline = DetectionPipeline(frame_queue, telemetry_buffer, telemetry_lock,
                                      clock_sync, detector, config, logger, stop_event)
+        if config.live.enabled:
+            # Optional: a busy port must not cost the flight, so log and fly on.
+            try:
+                from onboard.core.live_view import LiveView
+                pipeline.live = LiveView(config.live.host, config.live.port, stop_event, logger)
+                start("live_view", pipeline.live)
+            except OSError as exc:
+                logger.log_error(f"live view: cannot start ({exc}), continuing without it")
         start("video", video_stream)
         start("pipeline", pipeline)
         logger.log_info("onboard service running (%d threads)" % len(threads))

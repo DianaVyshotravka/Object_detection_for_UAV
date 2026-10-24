@@ -39,6 +39,12 @@ storage:
   save_min_interval_s: 0.0
   min_free_mb: 512        # below this, stop saving images but keep flying
 
+# Optional web page: annotated video + live detection map at http://host:port/
+live:
+  enabled: false
+  host: 127.0.0.1
+  port: 8080
+
 log_file: flights/onboard.log
 init_timeout_s: 10.0
 max_telemetry_dt_s: 0.5

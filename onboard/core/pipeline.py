@@ -69,6 +69,7 @@ class DetectionPipeline:
         self.storage = config.storage
         self.logger = logger
         self.stop_event = stop_event
+        self.live = None  # optional LiveView, set by main.run
 
         self.out_dir = Path(self.storage.out_dir)
         # Created up front, not lazily on first write: the disk-space check
@@ -166,7 +167,10 @@ class DetectionPipeline:
                 except Empty:
                     continue  # timeout, not a tight loop -- keeps SIGTERM responsive
                 try:
-                    self._write(self.process(frame))
+                    record = self.process(frame)
+                    self._write(record)
+                    if self.live is not None:
+                        self.live.publish(frame.image, record)
                 except Exception as exc:  # one bad frame must not end the flight
                     self.logger.log_error(f"pipeline: frame {frame.frame_id} failed: {exc}")
 

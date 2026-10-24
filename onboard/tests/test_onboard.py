@@ -576,6 +576,60 @@ def test_geotag_without_telemetry(tmp_path):
     assert path.exists() and geotag.read_gps(path) is None
 
 
+# --- live view ------------------------------------------------------------
+
+def test_live_view_serves_page_stream_and_map():
+    import urllib.request
+    from onboard.core.live_view import LiveView
+
+    stop = threading.Event()
+    live = LiveView("127.0.0.1", 0, stop, Logger())   # port 0: any free port
+    base = "http://127.0.0.1:%d" % live.server.server_address[1]
+    thread = threading.Thread(target=live.run, daemon=True)
+    thread.start()
+    try:
+        record = {"timestamp": "2026-10-24T14:03:12.000Z",
+                  "detections": [{"class": "vehicle", "conf": 0.9,
+                                  "bbox_xyxy": [10.0, 10.0, 40.0, 30.0]}],
+                  "telemetry": {"lat": 50.45, "lon": 30.52, "alt_msl_m": 180.0,
+                                "rel_alt_m": 60.0, "heading_deg": None}}
+        live.publish(np.zeros((48, 64, 3), np.uint8), record)
+
+        assert b"/stream" in urllib.request.urlopen(base + "/", timeout=2).read()
+
+        data = json.loads(urllib.request.urlopen(base + "/detections.json", timeout=2).read())
+        assert data["position"]["lat"] == 50.45
+        [point] = data["points"]["features"]
+        assert point["geometry"]["coordinates"] == [30.52, 50.45]   # GeoJSON is lon, lat
+        assert point["properties"]["summary"] == "1x vehicle"
+
+        stream = urllib.request.urlopen(base + "/stream", timeout=2)
+        assert stream.headers["Content-Type"].startswith("multipart/x-mixed-replace")
+        assert stream.readline() == b"--frame\r\n"
+        assert stream.readline() == b"Content-Type: image/jpeg\r\n"
+        length = int(stream.readline().split(b":")[1])
+        stream.readline()
+        assert stream.read(length)[:2] == b"\xff\xd8"   # a JPEG
+        stream.close()
+    finally:
+        stop.set()
+        thread.join(timeout=2.0)
+    assert not thread.is_alive()
+
+
+def test_live_view_skips_frames_without_gps_on_map():
+    from onboard.core.live_view import LiveView
+    live = LiveView("127.0.0.1", 0, threading.Event(), Logger())
+    try:
+        live.publish(np.zeros((8, 8, 3), np.uint8),
+                     {"timestamp": "t", "detections": [{"class": "person", "conf": 0.5,
+                                                         "bbox_xyxy": [0, 0, 1, 1]}],
+                      "telemetry": None})
+        assert len(live._points) == 0 and live._position is None
+    finally:
+        live.server.server_close()
+
+
 # --- map builder ----------------------------------------------------------
 
 def test_build_map(tmp_path):
