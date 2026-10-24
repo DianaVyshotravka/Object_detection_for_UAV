@@ -130,7 +130,7 @@ class VideoStream:
             self.frames_read += 1
             # Subtract the measured capture latency so the timestamp is the
             # moment of exposure, not the moment of delivery.
-            frame = Frame(frame_id=frame_id, timestamp=time.time() - self.latency_s,
+            frame = Frame(frame_id=frame_id, timestamp=time.monotonic() - self.latency_s,
                           image=image)
             self._enqueue_newest(frame)
 

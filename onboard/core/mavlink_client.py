@@ -137,10 +137,10 @@ class MavlinkClient:
             if msg is None:
                 continue  # 1 s timeout is what keeps this loop stoppable
 
-            now = time.time()
+            now = time.monotonic()  # same clock as frame timestamps, see clock_sync
             kind = msg.get_type()
             if kind == "TIMESYNC":
-                self.clock_sync.handle_timesync(msg, time.time_ns())
+                self.clock_sync.handle_timesync(msg, time.monotonic_ns())
             elif kind == "SYSTEM_TIME":
                 self.clock_sync.set_utc_offset(msg.time_unix_usec / 1e6, now)
             elif kind == "GLOBAL_POSITION_INT":

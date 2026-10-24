@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -130,9 +130,9 @@ def test_timesync_send_failure_survives():
 
 def test_clock_bootstrap_then_timesync_wins():
     sync = make_clock_sync()
-    sync.bootstrap(t_boot_s=10.0, recv_wall_s=1010.0)
+    sync.bootstrap(t_boot_s=10.0, recv_local_s=1010.0)
     assert sync.get_offset() == pytest.approx(1000.0)
-    sync.bootstrap(t_boot_s=11.0, recv_wall_s=9999.0)   # only the first counts
+    sync.bootstrap(t_boot_s=11.0, recv_local_s=9999.0)   # only the first counts
     assert sync.get_offset() == pytest.approx(1000.0)
 
     sync._ts1 = 1_000 * MS
@@ -145,11 +145,12 @@ def test_utc_offset_is_separate_from_timesync():
     sync = make_clock_sync()
     sync._ts1 = 1_000 * MS
     sync.handle_timesync(SimpleNamespace(tc1=500 * MS, ts1=1_000 * MS), 1_040 * MS)
-    assert sync.to_utc(5000.0) == 5000.0        # no SYSTEM_TIME yet -> Pi clock unchanged
+    # no SYSTEM_TIME yet -> Pi wall clock
+    assert sync.to_utc(5000.0) == pytest.approx(5000.0 + time.time() - time.monotonic(), abs=0.01)
 
-    sync.set_utc_offset(unix_s=1_700_000_000.0, recv_wall_s=5000.0)
+    sync.set_utc_offset(unix_s=1_700_000_000.0, recv_local_s=5000.0)
     assert sync.to_utc(5000.0) == pytest.approx(1_700_000_000.0)
-    sync.set_utc_offset(unix_s=0.0, recv_wall_s=5000.0)   # no GPS fix -> ignored
+    sync.set_utc_offset(unix_s=0.0, recv_local_s=5000.0)   # no GPS fix -> ignored
     assert sync.to_utc(5000.0) == pytest.approx(1_700_000_000.0)
 
 
@@ -319,7 +320,7 @@ def test_video_stream_timestamps_compensate_latency():
     frame = frame_queue.get(timeout=2.0)
     stop.set()
     thread.join(timeout=1.0)
-    assert time.time() - frame.timestamp >= 0.25
+    assert time.monotonic() - frame.timestamp >= 0.25
 
 
 # --- pipeline -------------------------------------------------------------
@@ -332,7 +333,7 @@ def make_pipeline(tmp_path, detections=None, clock_sync=None, **storage):
 
 
 def a_frame(frame_id=1):
-    return Frame(frame_id=frame_id, timestamp=time.time(),
+    return Frame(frame_id=frame_id, timestamp=time.monotonic(),
                  image=np.zeros((48, 64, 3), np.uint8))
 
 
@@ -395,7 +396,7 @@ def test_record_matches_project_plan_schema(tmp_path):
 
 def test_pipeline_attaches_nearest_telemetry(tmp_path):
     sync = make_clock_sync()
-    sync.bootstrap(t_boot_s=0.0, recv_wall_s=0.0)     # offset 0: boot time == local time
+    sync.bootstrap(t_boot_s=0.0, recv_local_s=0.0)     # offset 0: boot time == local time
     pipeline = make_pipeline(tmp_path, detections=[Detection("vehicle", 0.9, [1, 2, 3, 4])],
                              clock_sync=sync)
     frame = a_frame(1)
@@ -406,6 +407,26 @@ def test_pipeline_attaches_nearest_telemetry(tmp_path):
     record = pipeline.process(frame)
     assert record["telemetry"]["lat"] == pytest.approx(50.45)
     assert geotag.read_gps(tmp_path / "000001.jpg")[0] == pytest.approx(50.45, abs=1e-6)
+
+
+def test_wall_clock_step_does_not_break_matching(tmp_path, monkeypatch):
+    """NTP landing mid-flight steps time.time(); matching must not notice,
+    and with GPS UTC known the record timestamp must not either."""
+    sync = make_clock_sync()
+    sync.bootstrap(t_boot_s=0.0, recv_local_s=0.0)
+    sync.set_utc_offset(unix_s=1_700_000_000.0, recv_local_s=0.0)
+    pipeline = make_pipeline(tmp_path, detections=[Detection("vehicle", 0.9, [1, 2, 3, 4])],
+                             clock_sync=sync)
+    frame = a_frame(1)
+    with pipeline.telemetry_lock:
+        pipeline.telemetry_buffer.append(_sample(frame.timestamp - 0.05, lat=50.45))
+
+    real_time = time.time
+    monkeypatch.setattr(time, "time", lambda: real_time() + 3600.0)  # the step
+    record = pipeline.process(frame)
+    assert record["telemetry"]["lat"] == pytest.approx(50.45)
+    expected = datetime.fromtimestamp(1_700_000_000.0 + frame.timestamp, tz=timezone.utc)
+    assert record["timestamp"].startswith(expected.strftime("%Y-%m-%dT%H:%M:%S"))
 
 
 def test_storage_guard_blocks_writes(tmp_path, monkeypatch):
@@ -425,7 +446,7 @@ def test_storage_guard_blocks_writes(tmp_path, monkeypatch):
 def test_save_min_interval_throttles(tmp_path):
     pipeline = make_pipeline(tmp_path, detections=[Detection("person", 0.9, [1, 2, 3, 4])],
                              save_min_interval_s=10.0)
-    now = time.time()
+    now = time.monotonic()
     assert pipeline.process(Frame(1, now, np.zeros((48, 64, 3), np.uint8)))["image"]
     assert pipeline.process(Frame(2, now + 0.1, np.zeros((48, 64, 3), np.uint8)))["image"] is None
     assert pipeline.process(Frame(3, now + 11.0, np.zeros((48, 64, 3), np.uint8)))["image"]

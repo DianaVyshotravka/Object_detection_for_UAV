@@ -10,11 +10,19 @@ ever reads, and it hands TIMESYNC replies to ``handle_timesync()``.
 
 This module imports no pymavlink, which is also what makes it unit-testable on
 a machine with no autopilot and no pymavlink installed.
+
+"Local" time everywhere in the pipeline is time.monotonic(), not time.time(). 
+Wall/UTC time is only derived at the end, for timestamps and EXIF.
 """
 
 import threading
 import time
 from typing import Callable, Optional
+
+
+def mono_to_wall(local_s: float) -> float:
+    """Monotonic seconds -> the Pi's current wall clock (the no-GPS fallback)."""
+    return local_s + (time.time() - time.monotonic())
 
 
 class ClockSync:
@@ -39,9 +47,9 @@ class ClockSync:
 
     # --- offset convention -------------------------------------------------
     # offset = our_clock - autopilot_clock, so:
-    #     local_wall_time = autopilot_time + offset
+    #     local_monotonic_time = autopilot_time + offset
     # Telemetry carries the autopilot's time-since-boot, and this is what turns
-    # it into our wall clock so frames and telemetry can be compared. Getting
+    # it into our monotonic clock so frames and telemetry can be compared. Getting
     # the sign backwards doubles the error instead of cancelling it.
 
     def get_offset(self) -> Optional[float]:
@@ -56,19 +64,20 @@ class ClockSync:
     # happens on a drone with no network. SYSTEM_TIME.time_unix_usec is GPS
     # derived and is the only true UTC onboard.
 
-    def set_utc_offset(self, unix_s: float, recv_wall_s: float) -> None:
-        """From SYSTEM_TIME: how far our wall clock is from GPS UTC."""
+    def set_utc_offset(self, unix_s: float, recv_local_s: float) -> None:
+        """From SYSTEM_TIME: how far our monotonic clock is from GPS UTC."""
         if unix_s <= 0:
             return  # autopilot has no GPS fix yet
         with self._lock:
-            self._utc_offset_s = unix_s - recv_wall_s
+            self._utc_offset_s = unix_s - recv_local_s
 
     def to_utc(self, local_s: float) -> float:
-        """Local wall-clock seconds -> UTC. Falls back to the Pi clock."""
+        """Local monotonic seconds -> UTC. Falls back to the Pi wall clock."""
         with self._lock:
-            return local_s + (self._utc_offset_s or 0.0)
+            utc_offset = self._utc_offset_s
+        return mono_to_wall(local_s) if utc_offset is None else local_s + utc_offset
 
-    def bootstrap(self, t_boot_s: float, recv_wall_s: float) -> None:
+    def bootstrap(self, t_boot_s: float, recv_local_s: float) -> None:
         """Crude cold-start offset from the first telemetry message.
 
         Without this, every frame is ungeotagged until the first TIMESYNC round
@@ -77,7 +86,7 @@ class ClockSync:
         """
         with self._lock:
             if self._offset_s is None:
-                self._offset_s = recv_wall_s - t_boot_s
+                self._offset_s = recv_local_s - t_boot_s
                 self.logger.log_info("clock: bootstrapped offset %.3f s from telemetry"
                                      % self._offset_s)
 
@@ -96,7 +105,7 @@ class ClockSync:
             self._offset_s = offset_s
 
     def _sync_once(self) -> None:
-        self._ts1 = time.time_ns()
+        self._ts1 = time.monotonic_ns()
         try:
             self.send_timesync(0, self._ts1)  # tc1=0 -> this is a request
         except Exception as exc:  # a dropped link must not kill the thread
@@ -108,8 +117,3 @@ class ClockSync:
             # stop_event.wait, never time.sleep -- this is why a 30 s sync
             # interval still shuts down in well under 2 s (Fig. 2.6 checklist).
             self.stop_event.wait(self.interval_s)
-
-
-# ponytail: single-sample offset, no filter. The Pi has no battery RTC, so an
-# NTP step mid-flight jumps the offset by one sample interval. Add a 3-sample
-# median (lowest-RTT wins) if a flight log ever shows jitter.

@@ -54,7 +54,7 @@ class Detection:
 class Frame:
     """A captured frame on its way through the pipeline.
 
-    ``timestamp`` is local wall-clock seconds at the moment of exposure, i.e.
+    ``timestamp`` is local time.monotonic() seconds at the moment of exposure, i.e.
     already corrected by the camera latency knob (see VideoStream).
     """
 

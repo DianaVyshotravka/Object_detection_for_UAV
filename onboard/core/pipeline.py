@@ -13,6 +13,7 @@ from queue import Empty, Queue
 from typing import Optional
 
 from . import geotag
+from .clock_sync import mono_to_wall
 from .types import Frame, Telemetry
 
 
@@ -75,7 +76,7 @@ class DetectionPipeline:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.records_path = self.out_dir / "detections.jsonl"
         self._records = None
-        self._last_save = 0.0
+        self._last_save = float("-inf")  # monotonic can be < save_min_interval_s after boot
         self._saves = 0
         self.frames_processed = 0
         self.frames_saved = 0
@@ -118,7 +119,8 @@ class DetectionPipeline:
         # Two different clocks: the TIMESYNC offset above converts autopilot
         # boot-time to our clock for matching, and cannot date a photo.
         # to_utc() uses the GPS UTC from SYSTEM_TIME for that.
-        utc = self.clock_sync.to_utc(frame.timestamp) if self.clock_sync else frame.timestamp
+        utc = (self.clock_sync.to_utc(frame.timestamp) if self.clock_sync
+               else mono_to_wall(frame.timestamp))
         height, width = frame.image.shape[:2]
 
         image_name = None
