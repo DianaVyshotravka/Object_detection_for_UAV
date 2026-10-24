@@ -550,6 +550,25 @@ def test_geotag_roundtrip(tmp_path, lat, lon, alt):
     assert got_alt == pytest.approx(alt, abs=0.01)
 
 
+def test_geotag_dms_carries_rounded_seconds():
+    """50.99999999 deg must be 51 0' 0", not 50 59' 60\" (invalid EXIF)."""
+    deg, minutes, seconds = geotag._dms(50.99999999)
+    assert (float(deg), float(minutes), float(seconds)) == (51.0, 0.0, 0.0)
+    assert all(float(s) < 60 for s in geotag._dms(12.3456789)[1:])
+
+
+def test_geotag_writes_utc_capture_time(tmp_path):
+    from PIL import Image
+    path = tmp_path / "f.jpg"
+    telemetry = Telemetry(t_boot_s=1.0, lat=50.45, lon=30.52, alt_msl_m=180.0)
+    when = datetime(2026, 10, 24, 14, 3, 12, tzinfo=timezone.utc).timestamp()
+    geotag.save_jpeg(path, np.zeros((16, 16, 3), np.uint8), telemetry, when)
+
+    sub = Image.open(path).getexif().get_ifd(geotag.EXIF_IFD)
+    assert sub[0x9003] == "2026:10:24 14:03:12"
+    assert sub[0x9011] == "+00:00"
+
+
 def test_geotag_without_telemetry(tmp_path):
     """No GPS is never a reason to lose the frame."""
     path = tmp_path / "f.jpg"

@@ -16,24 +16,28 @@ from PIL import Image
 from PIL.TiffImagePlugin import IFDRational
 
 GPS_IFD = 0x8825
+EXIF_IFD = 0x8769
 
 
 def _dms(value: float) -> tuple:
     """Decimal degrees -> (deg, min, sec) as EXIF rationals. Sign dropped --
     the N/S/E/W ref tag carries it."""
-    value = abs(value)
-    deg = int(value)
-    minutes = int((value - deg) * 60)
-    seconds = (value - deg - minutes / 60) * 3600
-    return (IFDRational(deg, 1), IFDRational(minutes, 1),
-            IFDRational(round(seconds * 10000), 10000))
+    # Round once, in integer 1/10000 s, then split
+    total = round(abs(value) * 3600 * 10000)
+    deg, rest = divmod(total, 3600 * 10000)
+    minutes, seconds = divmod(rest, 60 * 10000)
+    return (IFDRational(deg, 1), IFDRational(minutes, 1), IFDRational(seconds, 10000))
 
 
 def build_exif(telemetry, when: float) -> Image.Exif:
     """EXIF block with GPS position and the UTC timestamp of the exposure."""
     stamp = datetime.fromtimestamp(when, tz=timezone.utc)
     exif = Image.Exif()
-    exif[0x0132] = stamp.strftime("%Y:%m:%d %H:%M:%S")  # DateTime
+    text = stamp.strftime("%Y:%m:%d %H:%M:%S")
+    exif[0x0132] = text 
+    sub = exif.get_ifd(EXIF_IFD)
+    sub[0x9003] = text        # DateTimeOriginal
+    sub[0x9011] = "+00:00"    # OffsetTimeOriginal
 
     alt = telemetry.alt_msl_m
     gps = {
