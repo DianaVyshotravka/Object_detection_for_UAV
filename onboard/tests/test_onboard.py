@@ -394,9 +394,18 @@ def test_picamera2_sensor_timestamp(monkeypatch):
 
 def make_pipeline(tmp_path, detections=None, clock_sync=None, **storage):
     config = make_config(tmp_path, **storage)
-    return DetectionPipeline(queue.Queue(), deque(maxlen=50), threading.Lock(),
-                             clock_sync, FakeDetector(detections), config,
-                             Logger(), threading.Event())
+    pipeline = DetectionPipeline(queue.Queue(), deque(maxlen=50), threading.Lock(),
+                                 clock_sync, FakeDetector(detections), config,
+                                 Logger(), threading.Event())
+    process = pipeline.process
+
+    def process_and_save(frame):  # no saver thread in unit tests: write synchronously
+        record = process(frame)
+        pipeline.saver.flush()
+        return record
+
+    pipeline.process = process_and_save
+    return pipeline
 
 
 def a_frame(frame_id=1):
@@ -424,6 +433,20 @@ def test_saved_image_has_boxes_unless_raw(tmp_path):
         r, g, b = Image.open(out / "000001.jpg").getpixel((10, 20))  # left edge of the box
         assert (r > 128 and g < 64) == boxed     # red line drawn, or untouched black
         assert not frame.image.any()             # the live view's frame is never drawn on
+
+
+def test_saver_drops_when_full_and_writes_queue_on_stop(tmp_path):
+    from onboard.core.pipeline import SAVE_QUEUE_SIZE
+    pipeline = make_pipeline(tmp_path, detections=[Detection("person", 0.9, [1, 2, 3, 4])],
+                             save_mode="all")
+    pipeline.process = DetectionPipeline.process.__get__(pipeline)   # real, no flush
+    records = [pipeline.process(a_frame(i)) for i in range(1, SAVE_QUEUE_SIZE + 3)]
+    assert [r["image"] is None for r in records] == [False] * SAVE_QUEUE_SIZE + [True] * 2
+    assert pipeline.saver.dropped == 2 and list(tmp_path.glob("*.jpg")) == []  # not yet
+
+    pipeline.stop_event.set()
+    pipeline.saver.run()   # stopping still writes what it accepted
+    assert len(list(tmp_path.glob("*.jpg"))) == SAVE_QUEUE_SIZE
 
 
 def test_pipeline_creates_a_fresh_out_dir(tmp_path):

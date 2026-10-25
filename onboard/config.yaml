@@ -31,6 +31,10 @@ detector:
   imgsz: 512           # must match the export; see the model's metadata.yaml
   conf: 0.25
   iou: 0.7
+  # NCNN CPU threads. Calibration knob: 4 = all Pi 5 cores, fastest alone but
+  # stalls whenever the camera/saver threads run (21 -> 10 FPS measured); 3
+  # keeps ~14 FPS while saving images. Empty = NCNN default (all cores).
+  threads: 3
 
 storage:
   out_dir: flights        # each start writes to flights/<Pi start time>/

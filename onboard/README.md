@@ -7,9 +7,10 @@ page with the annotated video and a live map.
 
 ```
 camera ──► video thread ──► frame queue (newest 2) ──► pipeline thread ──► flights/<start time>/
-                                                          ▲      │            *.jpg (GPS EXIF)
-flight controller ──► mavlink thread ──► telemetry buffer ┘      │            detections.jsonl
-        ▲                                                         └──► live view (optional)
+                                                          ▲      │  │         detections.jsonl
+flight controller ──► mavlink thread ──► telemetry buffer ┘      │  └► saver thread ──► *.jpg
+        ▲                                                         │     (queue of 8)    (boxes, GPS EXIF)
+        │                                                         └──► live view (optional)
         └── clock_sync thread (TIMESYNC: Pi clock ↔ FC clock)          http://<pi>:8080/
 ```
 
@@ -21,7 +22,7 @@ flight controller ──► mavlink thread ──► telemetry buffer ┘      �
 | `core/mavlink_client.py` | flight-controller link, the only MAVLink reader, auto-reconnect |
 | `core/clock_sync.py` | Pi ↔ FC clock offset (TIMESYNC) and GPS UTC (SYSTEM_TIME) |
 | `core/detector_model.py` | NCNN inference via Ultralytics |
-| `core/pipeline.py` | inference, telemetry matching, saving |
+| `core/pipeline.py` | inference, telemetry matching, JSONL log; `ImageSaver` thread writes the JPEGs |
 | `core/geotag.py` | GPS EXIF write/read |
 | `core/live_view.py` | optional web page: MJPEG stream + detection map |
 | `build_map.py` | after the flight: map of one run's detections |
@@ -160,6 +161,7 @@ Edit `~/uav/onboard/config.yaml`. The settings that usually change:
 | `detector.model_path` | NCNN model directory | relative to `~/uav` |
 | `detector.imgsz` | `512` | must match the NCNN export |
 | `detector.conf` | `0.25` | detection confidence threshold |
+| `detector.threads` | `3` | NCNN CPU threads. 4 is fastest alone but stalls while the camera and saver threads run; 3 keeps one core free |
 | `storage.save_mode` | `detections` | `detections` = only frames with objects, `all` = every frame |
 | `storage.draw_boxes` | `true` | draw boxes and labels on saved images; `false` = raw frames (boxes stay in `detections.jsonl`) |
 | `storage.save_min_interval_s` | `0.0` | minimum seconds between saved images |
@@ -185,10 +187,10 @@ Healthy startup log:
 INFO mavlink: heartbeat from system 1 component 1
 INFO storage: writing to /home/<user>/uav/flights/2026-10-24_14-03-12
 INFO clock: bootstrapped offset ... s from telemetry
-INFO detector: loaded .../yolo26n_..._ncnn_model at imgsz=512
-INFO onboard service running (4 threads)
+INFO detector: loaded .../yolo26n_..._ncnn_model at imgsz=512, 3 threads
+INFO onboard service running (5 threads)
 INFO camera: 690 frames read, 12 dropped          # every 30 s
-INFO pipeline: 650 frames, 41 saved, 97 detections
+INFO pipeline: 650 frames, 41 saved, 97 detections, 0 saves dropped
 ```
 
 Stop with **Ctrl+C**. It shuts down cleanly in about 1 s.

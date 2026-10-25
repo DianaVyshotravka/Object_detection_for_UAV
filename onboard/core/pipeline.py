@@ -9,7 +9,7 @@ import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from queue import Empty, Queue
+from queue import Empty, Full, Queue
 from typing import Optional
 
 from . import geotag
@@ -57,6 +57,61 @@ def new_run_dir(root: Path) -> Path:
     return path
 
 
+SAVE_QUEUE_SIZE = 8  # ~50 MB of 1080p frames; full = SD card can't keep up, drop
+
+
+class ImageSaver:
+    """Writes frames chosen by the pipeline: boxes, JPEG encode, EXIF.
+
+    Its own thread so a slow SD card or a burst of detections never stalls
+    inference. When the queue is full the image is dropped, not waited for --
+    the detection is still in detections.jsonl.
+    """
+
+    def __init__(self, stop_event: threading.Event, logger, draw_boxes: bool = True,
+                 jpeg_quality: int = 85):
+        self.stop_event = stop_event
+        self.logger = logger
+        self.draw_boxes = draw_boxes
+        self.jpeg_quality = jpeg_quality
+        self.queue = Queue(maxsize=SAVE_QUEUE_SIZE)
+        self.dropped = 0
+
+    def submit(self, path: Path, image, detections: list, telemetry, utc: float) -> bool:
+        try:
+            self.queue.put_nowait((path, image, detections, telemetry, utc))
+            return True
+        except Full:
+            self.dropped += 1
+            return False
+
+    def _save(self, job) -> None:
+        path, image, detections, telemetry, utc = job
+        try:
+            if self.draw_boxes and detections:
+                image = image.copy()  # the live view shares this frame; don't box it twice
+                draw_detections(image, detections)
+            geotag.save_jpeg(path, image, telemetry, utc, self.jpeg_quality)
+        except Exception as exc:  # one bad write must not end the flight
+            self.logger.log_error(f"storage: saving {path.name} failed: {exc}")
+
+    def flush(self) -> None:
+        """Write everything queued, in this thread."""
+        while True:
+            try:
+                self._save(self.queue.get_nowait())
+            except Empty:
+                return
+
+    def run(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                self._save(self.queue.get(timeout=0.5))
+            except Empty:
+                continue
+        self.flush()  # frames already accepted get written before exit
+
+
 class DetectionPipeline:
     def __init__(self, frame_queue: Queue, telemetry_buffer: deque,
                  telemetry_lock: threading.Lock, clock_sync, detector, config,
@@ -71,6 +126,8 @@ class DetectionPipeline:
         self.logger = logger
         self.stop_event = stop_event
         self.live = None  # optional LiveView, set by main.run
+        self.saver = ImageSaver(stop_event, logger, self.storage.draw_boxes,
+                                self.storage.jpeg_quality)  # thread started by main.run
 
         self.out_dir = Path(self.storage.out_dir)
         # Created up front, not lazily on first write: the disk-space check
@@ -127,15 +184,10 @@ class DetectionPipeline:
         dets = [d.as_dict() for d in detections]
 
         image_name = None
-        if self._should_save(detections, frame.timestamp):
+        if (self._should_save(detections, frame.timestamp)
+                and self.saver.submit(self.out_dir / ("%06d.jpg" % frame.frame_id),
+                                      frame.image, dets, frame.telemetry, utc)):
             image_name = "%06d.jpg" % frame.frame_id
-            image = frame.image
-            if self.storage.draw_boxes and dets:
-                image = image.copy()  # the live view draws its own; don't box it twice
-                draw_detections(image, dets)
-            # BGR -> RGB without importing cv2 just for a channel swap.
-            geotag.save_jpeg(self.out_dir / image_name, image[:, :, ::-1],
-                             frame.telemetry, utc, self.storage.jpeg_quality)
             self._last_save = frame.timestamp
             self._saves += 1
             self.frames_saved += 1
@@ -183,8 +235,9 @@ class DetectionPipeline:
                 now = time.monotonic()
                 if now - last_report >= 30.0:
                     self.logger.log_info(
-                        "pipeline: %d frames, %d saved, %d detections"
-                        % (self.frames_processed, self.frames_saved, self.detections_total))
+                        "pipeline: %d frames, %d saved, %d detections, %d saves dropped"
+                        % (self.frames_processed, self.frames_saved, self.detections_total,
+                           self.saver.dropped))
                     last_report = now
         finally:
             if self._records is not None:

@@ -39,6 +39,7 @@ class DetectorConfig:
     imgsz: int = 512
     conf: float = 0.25
     iou: float = 0.7
+    threads: int = 3      # NCNN CPU threads; leave a core for camera + saver threads
 
 
 @dataclass

@@ -152,7 +152,8 @@ def run(config, camera, mavlink_client, logger, detector=None) -> int:
         if detector is None:
             from onboard.core.detector_model import DetectorModel
             detector = DetectorModel(config.detector.model_path, config.detector.imgsz,
-                                     config.detector.conf, config.detector.iou, logger)
+                                     config.detector.conf, config.detector.iou, logger,
+                                     config.detector.threads)
     except Exception as exc:
         logger.log_error(f"detector: load failed: {exc}")
         crashed = "detector"
@@ -172,6 +173,7 @@ def run(config, camera, mavlink_client, logger, detector=None) -> int:
             except OSError as exc:
                 logger.log_error(f"live view: cannot start ({exc}), continuing without it")
         start("video", video_stream)
+        start("saver", pipeline.saver)
         start("pipeline", pipeline)
         logger.log_info("onboard service running (%d threads)" % len(threads))
 
