@@ -33,11 +33,15 @@ PAGE = """<!doctype html><meta charset="utf-8"><title>UAV live</title>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
 body{margin:0;font:14px sans-serif;background:#111;color:#eee;display:flex;flex-wrap:wrap}
-#video,#map{flex:1 1 480px;height:calc(100vh - 28px);min-height:300px}
+#video,#mapbox{flex:1 1 480px;height:calc(100vh - 28px);min-height:300px}
 #video{object-fit:contain;background:#000}#status{width:100%;padding:6px 10px}
+#mapbox{position:relative}#map{height:100%}
+#telem{position:absolute;top:10px;right:10px;z-index:1000;background:rgba(0,0,0,.75);
+  padding:8px 10px;border-radius:6px;font:13px monospace;line-height:1.5;white-space:pre}
 </style>
 <div id="status">connecting...</div>
-<img id="video" src="/stream" alt="live detections"><div id="map"></div>
+<img id="video" src="/stream" alt="live detections">
+<div id="mapbox"><div id="map"></div><div id="telem">no telemetry</div></div>
 <script>
 const map = L.map('map').setView([0, 0], 2);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -57,17 +61,27 @@ async function poll() {
       drone.setLatLng([p.lat, p.lon]).addTo(map);
       if (!centered) { map.setView([p.lat, p.lon], 17); centered = true; }
     }
+    const fps = data.fps == null ? '-' : data.fps.toFixed(1);
     document.getElementById('status').textContent =
-      `${data.points.features.length} detection points` +
-      (p ? ` | drone ${p.lat.toFixed(6)}, ${p.lon.toFixed(6)}, ${p.rel_alt_m} m AGL` : ' | no GPS');
+      `detector ${fps} FPS | ${data.points.features.length} detection points` +
+      (p ? '' : ' | no GPS');
+    const f = (v, d, u) => v == null ? '-' : v.toFixed(d) + u;
+    // Age in browser time: the Pi and laptop clocks may differ, so the server
+    // sends how old the sample is instead of when it was taken.
+    document.getElementById('telem').textContent = p ?
+      `Lat      ${p.lat.toFixed(7)}\nLon      ${p.lon.toFixed(7)}\n` +
+      `Alt MSL  ${f(p.alt_msl_m, 1, ' m')}\nAlt rel  ${f(p.rel_alt_m, 1, ' m')}\n` +
+      `Heading  ${f(p.heading_deg, 1, '°')}\nTime     ${data.position_time}\n` +
+      `Age      ${f(data.position_age_s, 1, ' s')}\nFPS      ${fps}` :
+      `no telemetry\nFPS      ${fps}`;
   } catch (e) { document.getElementById('status').textContent = 'service unreachable'; }
 }
 poll(); setInterval(poll, 2000);
 </script>"""
 
 
-def annotate(image, detections, width=STREAM_WIDTH):
-    """Downscaled copy of the BGR frame with boxes drawn, as JPEG bytes."""
+def annotate(image, detections, fps=None, width=STREAM_WIDTH):
+    """Downscaled copy of the BGR frame with boxes (and detector FPS), as JPEG bytes."""
     import cv2  # only a viewer pays for it
 
     scale = width / image.shape[1]
@@ -77,6 +91,10 @@ def annotate(image, detections, width=STREAM_WIDTH):
         cv2.rectangle(out, (x1, y1), (x2, y2), (0, 0, 255), 2)
         cv2.putText(out, "%s %.2f" % (det["class"], det["conf"]), (x1, max(y1 - 4, 12)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
+    if fps is not None:
+        text = "%.1f FPS" % fps
+        for color, thick in (((0, 0, 0), 4), ((0, 255, 0), 2)):  # outline, then fill
+            cv2.putText(out, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, thick, cv2.LINE_AA)
     return cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 70])[1].tobytes()
 
 
@@ -88,6 +106,10 @@ class LiveView:
         self._latest = None          # (seq, image, detections)
         self._seq = 0
         self._position = None
+        self._position_time = None   # record timestamp (UTC string) of the position
+        self._position_mono = None   # monotonic time it arrived, for the age
+        self._fps = None             # frames the pipeline publishes per second, smoothed
+        self._last_publish = None
         self._points = deque(maxlen=MAX_POINTS)
 
         view = self
@@ -113,12 +135,19 @@ class LiveView:
     # --- producer side (pipeline thread) ------------------------------------
 
     def publish(self, image, record: dict) -> None:
+        now = time.monotonic()
         with self._cond:
+            if self._last_publish is not None and now > self._last_publish:
+                rate = 1.0 / (now - self._last_publish)
+                self._fps = rate if self._fps is None else 0.9 * self._fps + 0.1 * rate
+            self._last_publish = now
             self._seq += 1
-            self._latest = (self._seq, image, record["detections"])
+            self._latest = (self._seq, image, record["detections"], self._fps)
             telemetry = record.get("telemetry")
             if telemetry:
                 self._position = telemetry
+                self._position_time = record["timestamp"]
+                self._position_mono = now
                 if record["detections"]:
                     self._points.append(self._feature(record, telemetry))
             self._cond.notify_all()
@@ -151,7 +180,10 @@ class LiveView:
     def _geojson(self, handler) -> None:
         with self._cond:
             data = {"points": {"type": "FeatureCollection", "features": list(self._points)},
-                    "position": self._position}
+                    "position": self._position, "position_time": self._position_time,
+                    "position_age_s": (None if self._position_mono is None
+                                       else round(time.monotonic() - self._position_mono, 1)),
+                    "fps": self._fps}
         body = json.dumps(data).encode()
         handler.send_response(200)
         handler.send_header("Content-Type", "application/json")
@@ -171,8 +203,8 @@ class LiveView:
                 latest = self._latest
             if latest is None or latest[0] == seen:
                 continue
-            seen, image, detections = latest
-            jpeg = annotate(image, detections)
+            seen, image, detections, fps = latest
+            jpeg = annotate(image, detections, fps)
             try:
                 handler.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n"
                                     b"Content-Length: %d\r\n\r\n" % len(jpeg))
