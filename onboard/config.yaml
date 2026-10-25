@@ -37,6 +37,7 @@ storage:
   save_mode: detections   # detections | all ("all" is ~25 GB/hour at 23 FPS)
   jpeg_quality: 85
   save_min_interval_s: 0.0
+  draw_boxes: true        # boxes + labels on saved images; false = raw frames (retraining data)
   min_free_mb: 512        # below this, stop saving images but keep flying
 
 # Optional web page: annotated video + live detection map at http://host:port/

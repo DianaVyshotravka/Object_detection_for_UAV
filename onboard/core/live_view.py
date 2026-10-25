@@ -80,17 +80,27 @@ poll(); setInterval(poll, 2000);
 </script>"""
 
 
+def draw_detections(image, detections) -> None:
+    """Boxes plus "class conf" labels, in place on a BGR image. Line width and
+    font scale with the image, so a 1920 px saved frame reads like the stream."""
+    import cv2  # only a viewer or a saved frame pays for it
+
+    k = max(1, round(image.shape[1] / STREAM_WIDTH))
+    for det in detections:
+        x1, y1, x2, y2 = (round(v) for v in det["bbox_xyxy"])
+        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 255), 2 * k)
+        cv2.putText(image, "%s %.2f" % (det["class"], det["conf"]), (x1, max(y1 - 4 * k, 12 * k)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5 * k, (0, 0, 255), k, cv2.LINE_AA)
+
+
 def annotate(image, detections, fps=None, width=STREAM_WIDTH):
     """Downscaled copy of the BGR frame with boxes (and detector FPS), as JPEG bytes."""
     import cv2  # only a viewer pays for it
 
     scale = width / image.shape[1]
     out = cv2.resize(image, (width, round(image.shape[0] * scale)))
-    for det in detections:
-        x1, y1, x2, y2 = (round(v * scale) for v in det["bbox_xyxy"])
-        cv2.rectangle(out, (x1, y1), (x2, y2), (0, 0, 255), 2)
-        cv2.putText(out, "%s %.2f" % (det["class"], det["conf"]), (x1, max(y1 - 4, 12)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
+    draw_detections(out, [dict(det, bbox_xyxy=[v * scale for v in det["bbox_xyxy"]])
+                          for det in detections])
     if fps is not None:
         text = "%.1f FPS" % fps
         for color, thick in (((0, 0, 0), 4), ((0, 255, 0), 2)):  # outline, then fill

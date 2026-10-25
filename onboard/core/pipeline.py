@@ -14,6 +14,7 @@ from typing import Optional
 
 from . import geotag
 from .clock_sync import mono_to_wall
+from .live_view import draw_detections
 from .types import Frame, Telemetry
 
 
@@ -123,12 +124,17 @@ class DetectionPipeline:
         utc = (self.clock_sync.to_utc(frame.timestamp) if self.clock_sync
                else mono_to_wall(frame.timestamp))
         height, width = frame.image.shape[:2]
+        dets = [d.as_dict() for d in detections]
 
         image_name = None
         if self._should_save(detections, frame.timestamp):
             image_name = "%06d.jpg" % frame.frame_id
+            image = frame.image
+            if self.storage.draw_boxes and dets:
+                image = image.copy()  # the live view draws its own; don't box it twice
+                draw_detections(image, dets)
             # BGR -> RGB without importing cv2 just for a channel swap.
-            geotag.save_jpeg(self.out_dir / image_name, frame.image[:, :, ::-1],
+            geotag.save_jpeg(self.out_dir / image_name, image[:, :, ::-1],
                              frame.telemetry, utc, self.storage.jpeg_quality)
             self._last_save = frame.timestamp
             self._saves += 1
@@ -140,7 +146,7 @@ class DetectionPipeline:
                                  .isoformat(timespec="milliseconds")
                                  .replace("+00:00", "Z"),
             "image_size": [width, height],
-            "detections": [d.as_dict() for d in detections],
+            "detections": dets,
             "image": image_name,
             "telemetry": frame.telemetry.as_dict() if frame.telemetry else None,
         }

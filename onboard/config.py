@@ -47,6 +47,7 @@ class StorageConfig:
     save_mode: str = "detections"   # detections | all
     jpeg_quality: int = 85
     save_min_interval_s: float = 0.0
+    draw_boxes: bool = True         # boxes + labels on saved images; false = raw (for retraining)
     min_free_mb: int = 512
 
 

@@ -414,6 +414,18 @@ def test_pipeline_saves_only_on_detection(tmp_path):
     assert (tmp_path / "000002.jpg").exists()
 
 
+def test_saved_image_has_boxes_unless_raw(tmp_path):
+    from PIL import Image
+    box = [Detection("vehicle", 0.9, [10, 10, 40, 30])]
+    for draw, boxed in ((True, True), (False, False)):
+        out = tmp_path / str(draw)
+        frame = a_frame(1)
+        make_pipeline(out, detections=box, draw_boxes=draw).process(frame)
+        r, g, b = Image.open(out / "000001.jpg").getpixel((10, 20))  # left edge of the box
+        assert (r > 128 and g < 64) == boxed     # red line drawn, or untouched black
+        assert not frame.image.any()             # the live view's frame is never drawn on
+
+
 def test_pipeline_creates_a_fresh_out_dir(tmp_path):
     """First flight: out_dir does not exist yet, and the disk-space check
     statvfs's it before anything is written."""

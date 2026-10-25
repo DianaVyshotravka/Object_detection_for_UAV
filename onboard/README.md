@@ -161,6 +161,7 @@ Edit `~/uav/onboard/config.yaml`. The settings that usually change:
 | `detector.imgsz` | `512` | must match the NCNN export |
 | `detector.conf` | `0.25` | detection confidence threshold |
 | `storage.save_mode` | `detections` | `detections` = only frames with objects, `all` = every frame |
+| `storage.draw_boxes` | `true` | draw boxes and labels on saved images; `false` = raw frames (boxes stay in `detections.jsonl`) |
 | `storage.save_min_interval_s` | `0.0` | minimum seconds between saved images |
 | `storage.min_free_mb` | `512` | below this free space, stop saving images (detections are still logged) |
 | `live.enabled` | `false` | web page with video and map, see §7 |
