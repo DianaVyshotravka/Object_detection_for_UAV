@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 STREAM_FPS = 5          # per viewer; the Pi encodes this many JPEGs per second
 STREAM_WIDTH = 960      # downscaled for the network; detection runs on the full frame
 MAX_POINTS = 1000       # map history kept in memory
+CPU_TEMP_PATH = "/sys/class/thermal/thermal_zone0/temp"   # millidegrees C
 
 # ponytail: Leaflet + OSM tiles from the internet, like build_map.py. A field
 # laptop with no uplink gets the video and an empty map; ship Leaflet and a
@@ -62,8 +63,9 @@ async function poll() {
       if (!centered) { map.setView([p.lat, p.lon], 17); centered = true; }
     }
     const fps = data.fps == null ? '-' : data.fps.toFixed(1);
+    const temp = data.cpu_temp_c == null ? '-' : data.cpu_temp_c.toFixed(1) + ' °C';
     document.getElementById('status').textContent =
-      `detector ${fps} FPS | ${data.points.features.length} detection points` +
+      `detector ${fps} FPS | Pi ${temp} | ${data.points.features.length} detection points` +
       (p ? '' : ' | no GPS');
     const f = (v, d, u) => v == null ? '-' : v.toFixed(d) + u;
     // Age in browser time: the Pi and laptop clocks may differ, so the server
@@ -72,12 +74,21 @@ async function poll() {
       `Lat      ${p.lat.toFixed(7)}\nLon      ${p.lon.toFixed(7)}\n` +
       `Alt MSL  ${f(p.alt_msl_m, 1, ' m')}\nAlt rel  ${f(p.rel_alt_m, 1, ' m')}\n` +
       `Heading  ${f(p.heading_deg, 1, '°')}\nTime     ${data.position_time}\n` +
-      `Age      ${f(data.position_age_s, 1, ' s')}\nFPS      ${fps}` :
-      `no telemetry\nFPS      ${fps}`;
+      `Age      ${f(data.position_age_s, 1, ' s')}\nFPS      ${fps}\nPi temp  ${temp}` :
+      `no telemetry\nFPS      ${fps}\nPi temp  ${temp}`;
   } catch (e) { document.getElementById('status').textContent = 'service unreachable'; }
 }
 poll(); setInterval(poll, 2000);
 </script>"""
+
+
+def cpu_temp_c():
+    """SoC temperature, or None off a Pi (dev box, CI)."""
+    try:
+        with open(CPU_TEMP_PATH) as f:
+            return int(f.read()) / 1000.0
+    except (OSError, ValueError):
+        return None
 
 
 def draw_detections(image, detections) -> None:
@@ -193,7 +204,7 @@ class LiveView:
                     "position": self._position, "position_time": self._position_time,
                     "position_age_s": (None if self._position_mono is None
                                        else round(time.monotonic() - self._position_mono, 1)),
-                    "fps": self._fps}
+                    "fps": self._fps, "cpu_temp_c": cpu_temp_c()}
         body = json.dumps(data).encode()
         handler.send_response(200)
         handler.send_header("Content-Type", "application/json")

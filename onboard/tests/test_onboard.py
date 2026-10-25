@@ -611,6 +611,7 @@ def test_live_view_serves_page_stream_and_map():
 
         data = json.loads(urllib.request.urlopen(base + "/detections.json", timeout=2).read())
         assert data["position"]["lat"] == 50.45
+        assert "cpu_temp_c" in data   # None on a dev box, a number on a Pi
         [point] = data["points"]["features"]
         assert point["geometry"]["coordinates"] == [30.52, 50.45]   # GeoJSON is lon, lat
         assert point["properties"]["summary"] == "1x vehicle"
