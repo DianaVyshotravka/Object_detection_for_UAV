@@ -2,7 +2,7 @@
 # Relative paths resolve against the deploy root (the parent of onboard/).
 
 camera:
-  source: "0"          # cv2 device index, a video file path, or "csi" for Picamera2
+  source: "csi"        # cv2 device index, a video file path, or "csi" for Picamera2
   # auto | picamera2 | cv2. A CSI ribbon camera needs picamera2, which is an
   # apt package, and a venv that can see it:
   #   sudo apt install -y python3-picamera2
@@ -20,8 +20,8 @@ camera:
 
 mavlink:
   enabled: true
-  url: /dev/serial0    # or udp:127.0.0.1:14550 for SITL
-  baud: 57600
+  url: /dev/ttyAMA0    # Pi 5 GPIO14/15 (needs dtparam=uart0=on); udp:127.0.0.1:14550 for SITL
+  baud: 115200         # must match the FC's SERIALx_BAUD (115 = 115200)
   telemetry_hz: 20       # GLOBAL_POSITION_INT; 20 Hz = 1 m between samples at 20 m/s
   timesync_interval_s: 10.0
   max_rtt_s: 0.5
