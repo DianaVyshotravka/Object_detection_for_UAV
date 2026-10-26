@@ -658,6 +658,35 @@ def test_live_view_serves_page_stream_and_map():
     assert not thread.is_alive()
 
 
+def test_live_view_serves_saved_images_and_zip(tmp_path):
+    import io, urllib.error, urllib.request, zipfile
+    from onboard.core.live_view import LiveView
+
+    for i in (1, 2):
+        geotag.save_jpeg(tmp_path / ("%06d.jpg" % i), np.zeros((64, 64, 3), np.uint8), None, time.time())
+    (tmp_path / "detections.jsonl").write_text("{}\n")
+    (tmp_path / "000003.tmp").write_bytes(b"half")      # saver mid-write: never served
+    stop = threading.Event()
+    live = LiveView("127.0.0.1", 0, stop, Logger(), tmp_path)
+    base = "http://127.0.0.1:%d" % live.server.server_address[1]
+    thread = threading.Thread(target=live.run, daemon=True)
+    thread.start()
+    get = lambda path: urllib.request.urlopen(base + path, timeout=2).read()
+    try:
+        assert json.loads(get("/images.json")) == ["000002.jpg", "000001.jpg"]   # newest first
+        assert get("/images/000001.jpg") == (tmp_path / "000001.jpg").read_bytes()
+        assert get("/thumbs/000001.jpg")[:2] == b"\xff\xd8"
+        for bad in ("/images/..%2Fdetections.jsonl", "/images/detections.jsonl",
+                    "/images/000003.tmp", "/images/000009.jpg"):
+            with pytest.raises(urllib.error.HTTPError):
+                get(bad)
+        names = zipfile.ZipFile(io.BytesIO(get("/download.zip"))).namelist()
+        assert names == ["000001.jpg", "000002.jpg", "detections.jsonl"]
+    finally:
+        stop.set()
+        thread.join(timeout=2.0)
+
+
 def test_live_view_skips_frames_without_gps_on_map():
     from onboard.core.live_view import LiveView
     live = LiveView("127.0.0.1", 0, threading.Event(), Logger())

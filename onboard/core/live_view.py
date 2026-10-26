@@ -3,8 +3,12 @@
     http://<host>:<port>/                  page
     http://<host>:<port>/stream            MJPEG of the newest frame, boxes drawn
     http://<host>:<port>/detections.json   GeoJSON of recent geotagged detections
+    http://<host>:<port>/images.json       newest saved images of this run
+    http://<host>:<port>/images/<name>     one saved image (view / download)
+    http://<host>:<port>/thumbs/<name>     its thumbnail
+    http://<host>:<port>/download.zip      the whole run folder (images + detections.jsonl)
 
-stdlib http.server, no Flask: three routes do not need a framework. The
+stdlib http.server, no Flask: a handful of routes do not need a framework. The
 pipeline only hands over a reference to the frame (publish() is O(1)); drawing
 and JPEG encoding happen in the viewer's request thread at STREAM_FPS, so a
 connected browser costs the inference loop nothing and no browser costs zero.
@@ -15,15 +19,21 @@ intrinsics and attitude.
 """
 
 import json
+import re
+import zipfile
 import threading
 import time
 from collections import deque
+from functools import lru_cache
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 STREAM_FPS = 5          # per viewer; the Pi encodes this many JPEGs per second
 STREAM_WIDTH = 960      # downscaled for the network; detection runs on the full frame
 MAX_POINTS = 1000       # map history kept in memory
 CPU_TEMP_PATH = "/sys/class/thermal/thermal_zone0/temp"   # millidegrees C
+GALLERY_SIZE = 60       # newest saved images listed on the page
+IMAGE_NAME = re.compile(r"\d{6,}\.jpg")  # what ImageSaver writes; nothing else is served
 
 # ponytail: Leaflet + OSM tiles from the internet, like build_map.py. A field
 # laptop with no uplink gets the video and an empty map; ship Leaflet and a
@@ -39,17 +49,29 @@ body{margin:0;font:14px sans-serif;background:#111;color:#eee;display:flex;flex-
 #mapbox{position:relative}#map{height:100%}
 #telem{position:absolute;top:10px;right:10px;z-index:1000;background:rgba(0,0,0,.75);
   padding:8px 10px;border-radius:6px;font:13px monospace;line-height:1.5;white-space:pre}
+#galleryhead{width:100%;padding:10px 10px 0}
+#gallery{width:100%;padding:10px;display:grid;gap:8px;
+  grid-template-columns:repeat(auto-fill,minmax(240px,1fr))}
+#gallery figure{margin:0;background:#222;border-radius:4px;overflow:hidden}
+#gallery img{width:100%;display:block}
+#gallery figcaption{display:flex;justify-content:space-between;padding:4px 8px;font-size:12px}
+a{color:#8ab4f8}
 </style>
 <div id="status">connecting...</div>
 <img id="video" src="/stream" alt="live detections">
 <div id="mapbox"><div id="map"></div><div id="telem">no telemetry</div></div>
+<div id="galleryhead">Saved images (newest first) |
+  <a href="/download.zip" download>download whole run (zip)</a></div>
+<div id="gallery"></div>
 <script>
 const map = L.map('map').setView([0, 0], 2);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
   {maxZoom: 19, attribution: '&copy; OpenStreetMap'}).addTo(map);
 const points = L.geoJSON(null, {
   pointToLayer: (f, ll) => L.circleMarker(ll, {radius: 6, color: '#d93025', weight: 2}),
-  onEachFeature: (f, l) => l.bindPopup(`${f.properties.time}<br>${f.properties.summary}`)
+  onEachFeature: (f, l) => l.bindPopup(`${f.properties.time}<br>${f.properties.summary}` +
+    (f.properties.image ? `<br><a href="/images/${f.properties.image}" target="_blank">` +
+      `<img src="/thumbs/${f.properties.image}" width="240"></a>` : ''))
 }).addTo(map);
 const drone = L.circleMarker([0, 0], {radius: 8, color: '#1a73e8', fillOpacity: 0.9});
 let centered = false;
@@ -78,7 +100,18 @@ async function poll() {
       `no telemetry\nFPS      ${fps}\nPi temp  ${temp}`;
   } catch (e) { document.getElementById('status').textContent = 'service unreachable'; }
 }
-poll(); setInterval(poll, 2000);
+let shown = '';
+async function gallery() {
+  try {
+    const names = await (await fetch('/images.json')).json();
+    if (names.join() === shown) return;  // unchanged: keep loaded thumbnails
+    shown = names.join();
+    document.getElementById('gallery').innerHTML = names.map(n =>
+      `<figure><a href="/images/${n}" target="_blank"><img src="/thumbs/${n}" loading="lazy"></a>` +
+      `<figcaption>${n}<a href="/images/${n}" download>download</a></figcaption></figure>`).join('');
+  } catch (e) {}
+}
+poll(); setInterval(poll, 2000); gallery(); setInterval(gallery, 5000);
 </script>"""
 
 
@@ -89,6 +122,16 @@ def cpu_temp_c():
             return int(f.read()) / 1000.0
     except (OSError, ValueError):
         return None
+
+
+@lru_cache(maxsize=GALLERY_SIZE * 2)
+def thumbnail(path: Path, mtime: float):
+    """Small JPEG of a saved image. Decoding at 1/4 scale is a few ms on the Pi;
+    saved files never change, so (path, mtime) caches safely."""
+    import cv2
+
+    image = cv2.imread(str(path), cv2.IMREAD_REDUCED_COLOR_4)
+    return None if image is None else cv2.imencode(".jpg", image)[1].tobytes()
 
 
 def draw_detections(image, detections) -> None:
@@ -120,8 +163,10 @@ def annotate(image, detections, fps=None, width=STREAM_WIDTH):
 
 
 class LiveView:
-    def __init__(self, host: str, port: int, stop_event: threading.Event, logger):
+    def __init__(self, host: str, port: int, stop_event: threading.Event, logger,
+                 image_dir: Path = None):
         self.stop_event = stop_event
+        self.image_dir = Path(image_dir) if image_dir else None  # this run's saved images
         self.logger = logger
         self._cond = threading.Condition()
         self._latest = None          # (seq, image, detections)
@@ -137,12 +182,17 @@ class LiveView:
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
+                path = self.path.split("?")[0]
                 route = {"/": view._page, "/stream": view._stream,
-                         "/detections.json": view._geojson}.get(self.path)
-                if route is None:
-                    self.send_error(404)
-                else:
+                         "/detections.json": view._geojson,
+                         "/images.json": view._image_list,
+                         "/download.zip": view._zip}.get(path)
+                if route is not None:
                     route(self)
+                elif path.startswith(("/images/", "/thumbs/")):
+                    view._image(self, path.split("/")[2], path.startswith("/thumbs/"))
+                else:
+                    self.send_error(404)
 
             def log_message(self, *args):
                 pass  # one line per MJPEG frame would flood the journal
@@ -185,18 +235,40 @@ class LiveView:
                 "time": record["timestamp"],
                 "counts": counts,
                 "summary": ", ".join(f"{n}x {c}" for c, n in sorted(counts.items())),
+                "image": record.get("image"),
             },
         }
 
     # --- routes (request threads) -------------------------------------------
 
-    def _page(self, handler) -> None:
-        body = PAGE.encode()
+    @staticmethod
+    def _send(handler, body: bytes, content_type: str) -> None:
         handler.send_response(200)
-        handler.send_header("Content-Type", "text/html; charset=utf-8")
+        handler.send_header("Content-Type", content_type)
         handler.send_header("Content-Length", str(len(body)))
         handler.end_headers()
         handler.wfile.write(body)
+
+    def _page(self, handler) -> None:
+        self._send(handler, PAGE.encode(), "text/html; charset=utf-8")
+
+    def _image_list(self, handler) -> None:
+        # Names are zero-padded frame ids, so name order is capture order.
+        names = (sorted((p.name for p in self.image_dir.glob("*.jpg")), reverse=True)
+                 if self.image_dir else [])
+        self._send(handler, json.dumps(names[:GALLERY_SIZE]).encode(), "application/json")
+
+    def _image(self, handler, name: str, thumb: bool) -> None:
+        # Strict name match: no "..", no slashes, nothing outside image_dir.
+        path = self.image_dir / name if self.image_dir and IMAGE_NAME.fullmatch(name) else None
+        try:
+            body = (thumbnail(path, path.stat().st_mtime) if thumb else path.read_bytes()) if path else None
+        except OSError:
+            body = None
+        if body is None:
+            handler.send_error(404)
+        else:
+            self._send(handler, body, "image/jpeg")
 
     def _geojson(self, handler) -> None:
         with self._cond:
@@ -205,12 +277,28 @@ class LiveView:
                     "position_age_s": (None if self._position_mono is None
                                        else round(time.monotonic() - self._position_mono, 1)),
                     "fps": self._fps, "cpu_temp_c": cpu_temp_c()}
-        body = json.dumps(data).encode()
+        self._send(handler, json.dumps(data).encode(), "application/json")
+
+    def _zip(self, handler) -> None:
+        """Stream the run folder as a zip. ZIP_STORED: JPEGs are already
+        compressed, so this is disk -> network with no CPU for the detector to
+        lose. No Content-Length (size unknown up front); HTTP/1.0 ends the
+        response by closing the connection."""
+        if self.image_dir is None:
+            handler.send_error(404)
+            return
         handler.send_response(200)
-        handler.send_header("Content-Type", "application/json")
-        handler.send_header("Content-Length", str(len(body)))
+        handler.send_header("Content-Type", "application/zip")
+        handler.send_header("Content-Disposition",
+                            f'attachment; filename="{self.image_dir.name}.zip"')
         handler.end_headers()
-        handler.wfile.write(body)
+        try:
+            with zipfile.ZipFile(handler.wfile, "w", zipfile.ZIP_STORED) as zf:
+                for path in sorted(self.image_dir.iterdir()):
+                    if path.is_file() and path.suffix != ".tmp":  # skip half-written images
+                        zf.write(path, path.name)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # viewer cancelled the download
 
     def _stream(self, handler) -> None:
         handler.send_response(200)

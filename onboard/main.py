@@ -117,8 +117,14 @@ def run(config, camera, mavlink_client, logger, detector=None) -> int:
     stop_event = threading.Event()
 
     def handle_signal(signum, _frame):
-        logger.log_info(f"{signal.Signals(signum).name} received - stop signal")
+        # Stop first: the signal can land mid-write to stderr, and logging from
+        # here then raises "reentrant call" -- which used to skip the set() and
+        # hang shutdown until systemd's SIGKILL.
         stop_event.set()
+        try:
+            logger.log_info(f"{signal.Signals(signum).name} received - stop signal")
+        except RuntimeError:
+            pass
 
     # SIGINT as well as SIGTERM: without it Ctrl+C during a manual Pi run
     # raises out of the wait below and skips the whole shutdown block.
@@ -168,7 +174,8 @@ def run(config, camera, mavlink_client, logger, detector=None) -> int:
             # Optional: a busy port must not cost the flight, so log and fly on.
             try:
                 from onboard.core.live_view import LiveView
-                pipeline.live = LiveView(config.live.host, config.live.port, stop_event, logger)
+                pipeline.live = LiveView(config.live.host, config.live.port, stop_event, logger,
+                                         pipeline.out_dir)
                 start("live_view", pipeline.live)
             except OSError as exc:
                 logger.log_error(f"live view: cannot start ({exc}), continuing without it")

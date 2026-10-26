@@ -69,7 +69,10 @@ def save_jpeg(path: Path, bgr_image, telemetry, when: float, quality: int = 85) 
         exif = build_exif(telemetry, when).tobytes()  # starts with b"Exif\0\0"
         # APP1 right after SOI (FFD8), where EXIF readers look for it.
         jpeg = jpeg[:2] + b"\xff\xe1" + struct.pack(">H", len(exif) + 2) + exif + jpeg[2:]
-    Path(path).write_bytes(jpeg)
+    # Write then rename: the live view lists *.jpg and must never serve half a file.
+    tmp = Path(path).with_suffix(".tmp")
+    tmp.write_bytes(jpeg)
+    tmp.replace(path)
 
 
 def read_gps(path: Path):
