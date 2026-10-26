@@ -359,6 +359,10 @@ def test_picamera2_sensor_timestamp(monkeypatch):
 
     class FakePicamera2:
         next_ns = None
+        camera_controls = {"AfMode": (0, 2, 0)}
+
+        def set_controls(self, controls):
+            self.controls = controls
 
         def create_video_configuration(self, **kw):
             return kw
@@ -375,6 +379,7 @@ def test_picamera2_sensor_timestamp(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "picamera2", SimpleNamespace(Picamera2=FakePicamera2))
     capture = video_stream.Picamera2Capture(4, 4, Logger())
+    assert capture._cam.controls == {"AfMode": 2}      # continuous autofocus on
 
     FakePicamera2.next_ns = time.monotonic_ns() - 50 * MS
     ok, image = capture.read()

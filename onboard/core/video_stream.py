@@ -37,6 +37,11 @@ class Picamera2Capture:
         # picamera2's "RGB888" is BGR in memory, which is what cv2/Ultralytics expect.
         self._cam.configure(self._cam.create_video_configuration(
             main={"size": (width, height), "format": "RGB888"}, buffer_count=2))
+        # Autofocus modules (OV64A40 OwlSight, Camera Module 3) otherwise sit at
+        # the tuning-file lens default: 4x less sharp than focused, measured.
+        # Continuous AF (AfMode 2) follows the scene, near or at altitude.
+        if "AfMode" in self._cam.camera_controls:
+            self._cam.set_controls({"AfMode": 2})
         self._cam.start()
 
     def read(self):
